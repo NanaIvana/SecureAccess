@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+.env
+node_modules/
+*.sqlite3
+backend/ml/artifacts/
+backend/data/generated/
