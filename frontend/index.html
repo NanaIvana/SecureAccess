@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecureAccess — Supervision des connexions</title>
+<style>
+  :root {
+    --bg:#f4f6f9; --card:#fff; --ink:#18212f; --muted:#667085; --line:#e3e8ef; --brand:#1d4ed8; --brand-ink:#fff;
+    --ok:#15803d; --ok-bg:#dcfce7; --warn:#b45309; --warn-bg:#fef3c7; --bad:#b91c1c; --bad-bg:#fee2e2;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  a { color:var(--brand); }
+  .hidden { display:none !important; }
+  /* Bandeau données simulées */
+  .sim { background:#1e293b; color:#e2e8f0; font-size:12.5px; text-align:center; padding:5px 10px; }
+  /* Connexion */
+  #login { max-width:380px; margin:9vh auto; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:28px; }
+  #login h1 { margin:0 0 4px; font-size:22px; } #login p { color:var(--muted); margin:0 0 18px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+  input, select, textarea, button { font:inherit; }
+  input, select, textarea { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+  button { cursor:pointer; border:1px solid var(--line); background:#fff; color:var(--ink); padding:8px 14px; border-radius:8px; }
+  button:hover { border-color:#b8c2d3; }
+  button.primary { background:var(--brand); color:var(--brand-ink); border-color:var(--brand); }
+  button.danger { background:var(--bad); color:#fff; border-color:var(--bad); }
+  button:disabled { opacity:.55; cursor:default; }
+  .err { color:var(--bad); font-size:13.5px; margin-top:10px; min-height:18px; }
+  /* Mise en page */
+  header.top { display:flex; align-items:center; gap:18px; background:var(--card); border-bottom:1px solid var(--line); padding:0 22px; flex-wrap:wrap; }
+  header.top .logo { font-weight:700; font-size:17px; padding:14px 0; }
+  nav { display:flex; gap:4px; flex:1; flex-wrap:wrap; }
+  nav button { border:0; background:none; border-bottom:3px solid transparent; border-radius:0; padding:15px 12px; color:var(--muted); }
+  nav button.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+  .who { font-size:13px; color:var(--muted); display:flex; gap:10px; align-items:center; }
+  main { max-width:1180px; margin:0 auto; padding:22px; }
+  h2 { margin:0 0 14px; font-size:20px; } h3 { margin:0 0 10px; font-size:15px; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; } .row > * { flex:1 1 320px; min-width:0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .toolbar { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin-bottom:14px; }
+  .toolbar > div { width:auto; } .toolbar select, .toolbar input { width:auto; min-width:130px; }
+  /* KPI */
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; margin-bottom:16px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .kpi .l { color:var(--muted); font-size:13px; } .kpi .v { font-size:28px; font-weight:700; margin:2px 0; }
+  .kpi .d { font-size:12.5px; color:var(--muted); } .up-bad { color:var(--bad); } .up-ok { color:var(--ok); }
+  /* Badges */
+  .b { display:inline-block; padding:2px 9px; border-radius:99px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .b.NORMAL { background:var(--ok-bg); color:var(--ok); } .b.SUSPECT, .b.MOYENNE { background:var(--warn-bg); color:var(--warn); }
+  .b.HAUT_RISQUE, .b.CRITIQUE { background:var(--bad-bg); color:var(--bad); }
+  .b.NOUVELLE { background:#dbeafe; color:#1d4ed8; } .b.EN_COURS { background:var(--warn-bg); color:var(--warn); }
+  .b.TRAITEE { background:var(--ok-bg); color:var(--ok); } .b.FAUSSE_ALERTE { background:#e5e7eb; color:#374151; }
+  /* Tableaux */
+  .tw { overflow-x:auto; } table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12.5px; } tr.click { cursor:pointer; } tr.click:hover { background:#f8fafc; }
+  tr.sel { background:#eef4ff; }
+  .pager { display:flex; gap:10px; align-items:center; justify-content:flex-end; margin-top:10px; color:var(--muted); font-size:13px; }
+  .muted { color:var(--muted); } .small { font-size:13px; }
+  .empty { padding:26px; text-align:center; color:var(--muted); }
+  ul.reasons { margin:6px 0 0; padding-left:18px; } ul.reasons li { margin:3px 0; }
+  .gauge { height:10px; border-radius:99px; background:#e5e7eb; overflow:hidden; margin:6px 0; } .gauge > i { display:block; height:100%; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; } @media (max-width:640px){ .grid2 { grid-template-columns:1fr; } }
+  .presets { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px; }
+  .bar { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:13px; } .bar .t { width:190px; flex:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar .f { height:10px; background:var(--brand); border-radius:4px; } .bar .n { color:var(--muted); }
+  .matrix td, .matrix th { text-align:center; } .matrix td.diag { background:#dcfce7; font-weight:700; } .matrix td.off { background:#fee2e2; }
+  .toast { position:fixed; bottom:18px; right:18px; background:#111827; color:#fff; padding:10px 16px; border-radius:10px; font-size:14px; z-index:9; }
+  .warnbox { background:var(--warn-bg); color:#78350f; border-radius:10px; padding:10px 14px; font-size:13.5px; margin-bottom:14px; }
+  svg text { font:11px system-ui,sans-serif; fill:#667085; }
+</style>
+</head>
+<body>
+<div class="sim">Données entièrement simulées (jeu synthétique) — les performances de détection ne préjugent pas de résultats sur des données réelles.</div>
+
+<!-- ============ CONNEXION ============ -->
+<section id="login">
+  <h1>SecureAccess</h1>
+  <p>Supervision des connexions suspectes</p>
+  <label for="email">E-mail</label><input id="email" type="email" autocomplete="username">
+  <label for="password">Mot de passe</label><input id="password" type="password" autocomplete="current-password">
+  <div class="err" id="loginErr"></div>
+  <button class="primary" style="width:100%;margin-top:6px" id="loginBtn">Se connecter</button>
+</section>
+
+<!-- ============ APPLICATION ============ -->
+<div id="app" class="hidden">
+  <header class="top">
+    <div class="logo">🛡️ SecureAccess</div>
+    <nav id="nav"></nav>
+    <div class="who"><span id="whoami"></span><button id="logoutBtn">Déconnexion</button></div>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Configuration et état
+// ---------------------------------------------------------------------------
+const API = (localStorage.getItem("api_base") || "http://127.0.0.1:8000") + "/api";
+const state = { access: null, refresh: null, user: null, page: "synthese", selectedAlert: null };
+
+const $ = (s, root = document) => root.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtDay = (iso) => new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+const fmtInt = (n) => Number(n).toLocaleString("fr-FR");
+const LEVEL = { NORMAL: "Normal", SUSPECT: "Suspect", HAUT_RISQUE: "Haut risque" };
+const STATUS = { NOUVELLE: "Nouvelle", EN_COURS: "En cours", TRAITEE: "Traitée", FAUSSE_ALERTE: "Fausse alerte" };
+const SEVERITY = { MOYENNE: "Moyenne", CRITIQUE: "Critique" };
+const badge = (cls, label) => `<span class="b ${esc(cls)}">${esc(label)}</span>`;
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.add("hidden"), 3200);
+}
+
+// ---------------------------------------------------------------------------
+// Appels API avec renouvellement automatique du jeton (JWT d'accès : 15 min)
+// ---------------------------------------------------------------------------
+async function api(path, { method = "GET", body, retry = true } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (state.access) headers.Authorization = "Bearer " + state.access;
+  const res = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  if (res.status === 401 && retry && state.refresh && !path.startsWith("/auth/")) {
+    const r = await fetch(API + "/auth/refresh/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh: state.refresh }) });
+    if (r.ok) {
+      const t = await r.json(); state.access = t.access; if (t.refresh) state.refresh = t.refresh; saveSession();
+      return api(path, { method, body, retry: false });
+    }
+    logout(true); throw new Error("Session expirée");
+  }
+  const data = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) {
+    const msg = data && (data.detail || Object.values(data).flat().join(" ")) || ("Erreur " + res.status);
+    const e = new Error(msg); e.status = res.status; throw e;
+  }
+  return data;
+}
+function saveSession() { sessionStorage.setItem("sa_session", JSON.stringify({ a: state.access, r: state.refresh, u: state.user })); }
+
+// ---------------------------------------------------------------------------
+// Connexion / déconnexion
+// ---------------------------------------------------------------------------
+async function login() {
+  $("#loginErr").textContent = ""; $("#loginBtn").disabled = true;
+  try {
+    const d = await api("/auth/login/", { method: "POST", body: { email: $("#email").value.trim(), password: $("#password").value }, retry: false });
+    state.access = d.access; state.refresh = d.refresh; state.user = d.user; saveSession(); startApp();
+  } catch (e) {
+    $("#loginErr").textContent = e.status === 401 ? "Identifiants invalides." : e.message;
+  } finally { $("#loginBtn").disabled = false; }
+}
+async function logout(silent) {
+  try { if (!silent && state.refresh) await api("/auth/logout/", { method: "POST", body: { refresh: state.refresh }, retry: false }); } catch (e) {}
+  state.access = state.refresh = state.user = null; sessionStorage.removeItem("sa_session");
+  $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#password").value = "";
+}
+
+// ---------------------------------------------------------------------------
+// Navigation : les menus dépendent du rôle (le contrôle réel est fait par l'API)
+// ---------------------------------------------------------------------------
+const PAGES = [
+  { id: "synthese", label: "Synthèse", roles: ["ADMIN", "RESPONSABLE"], render: renderSynthese },
+  { id: "alertes", label: "Alertes", roles: ["ADMIN"], render: renderAlertes },
+  { id: "historique", label: "Historique", roles: ["ADMIN"], render: renderHistorique },
+  { id: "simulateur", label: "Simulateur", roles: ["ADMIN"], render: renderSimulateur },
+  { id: "modele", label: "Modèle", roles: ["ADMIN"], render: renderModele },
+  { id: "admin", label: "Administration", roles: ["ADMIN"], render: renderAdmin },
+];
+function startApp() {
+  $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
+  $("#whoami").textContent = `${state.user.email} · ${state.user.role}`;
+  const pages = PAGES.filter((p) => p.roles.includes(state.user.role));
+  if (!pages.length) { $("#view").innerHTML = `<div class="card empty">Votre rôle n'a accès à aucune page de supervision.</div>`; $("#nav").innerHTML = ""; return; }
+  $("#nav").innerHTML = pages.map((p) => `<button data-p="${p.id}">${p.label}</button>`).join("");
+  go(pages.some((p) => p.id === state.page) ? state.page : pages[0].id);
+}
+function go(id) {
+  state.page = id;
+  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.p === id));
+  const p = PAGES.find((x) => x.id === id);
+  $("#view").innerHTML = `<div class="empty">Chargement…</div>`;
+  Promise.resolve(p.render()).catch((e) => { $("#view").innerHTML = `<div class="card"><b>Erreur :</b> ${esc(e.message)}</div>`; });
+}
+
+// ---------------------------------------------------------------------------
+// Petits graphiques SVG (aucune dépendance externe)
+// ---------------------------------------------------------------------------
+function lineChart(points, key, color, h = 150) {
+  if (!points.length) return `<div class="empty">Aucune donnée pour cette période.</div>`;
+  const w = 560, pad = 28, max = Math.max(...points.map((p) => p[key]), 1);
+  const x = (i) => pad + (points.length === 1 ? 0 : i * (w - pad * 2) / (points.length - 1));
+  const y = (v) => h - pad - (v / max) * (h - pad * 2);
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
+  const step = Math.max(1, Math.ceil(points.length / 7));
+  const labels = points.map((p, i) => i % step === 0 ? `<text x="${x(i)}" y="${h - 8}" text-anchor="middle">${fmtDay(p.date)}</text>` : "").join("");
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="Courbe">
+    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="#e3e8ef"/>
+    <text x="4" y="${pad - 8}">${fmtInt(max)}</text>
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="2.2"/>${labels}</svg>`;
+}
+function barChart(points, h = 150) {
+  if (!points.length) return `<div class="empty">Aucune alerte sur cette période.</div>`;
+  const w = 560, pad = 28, max = Math.max(...points.map((p) => p.alertes), 1), bw = Math.max(2, (w - pad * 2) / points.length - 2);
+  const bars = points.map((p, i) => {
+    const x = pad + i * ((w - pad * 2) / points.length), hh = (p.alertes / max) * (h - pad * 2), hc = (p.critiques / max) * (h - pad * 2);
+    return `<rect x="${x}" y="${h - pad - hh}" width="${bw}" height="${hh}" fill="#f59e0b"/><rect x="${x}" y="${h - pad - hc}" width="${bw}" height="${hc}" fill="#dc2626"/>`;
+  }).join("");
+  const step = Math.max(1, Math.ceil(points.length / 7));
+  const labels = points.map((p, i) => i % step === 0 ? `<text x="${pad + i * ((w - pad * 2) / points.length) + bw / 2}" y="${h - 8}" text-anchor="middle">${fmtDay(p.date)}</text>` : "").join("");
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="Histogramme"><text x="4" y="${pad - 8}">${fmtInt(max)}</text>${bars}${labels}</svg>`;
+}
+function donut(items) {
+  const total = items.reduce((s, i) => s + i.count, 0) || 1, R = 52, C = 2 * Math.PI * R;
+  const colors = { NORMAL: "#16a34a", SUSPECT: "#f59e0b", HAUT_RISQUE: "#dc2626" };
+  let off = 0;
+  const arcs = items.map((i) => {
+    const len = (i.count / total) * C, s = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="${colors[i.level]}" stroke-width="22" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;
+    off += len; return s;
+  }).join("");
+  const legend = items.map((i) => `<div class="small">${badge(i.level, LEVEL[i.level])} <b>${fmtInt(i.count)}</b> <span class="muted">(${i.pct} %)</span></div>`).join("");
+  return `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap"><svg viewBox="0 0 140 140" width="150" role="img" aria-label="Répartition des risques">${arcs}</svg><div style="display:grid;gap:8px">${legend}</div></div>`;
+}
+function variation(k, unit = "%") {
+  if (k.variation_pct === undefined && k.variation_points === undefined) return "";
+  const v = k.variation_pct !== undefined ? k.variation_pct : k.variation_points;
+  if (v === null) return `<span class="muted">pas de période précédente</span>`;
+  const arrow = v > 0 ? "▲" : v < 0 ? "▼" : "■";
+  const cls = v > 0 ? "up-bad" : v < 0 ? "up-ok" : "";
+  return `<span class="${cls}">${arrow} ${Math.abs(v)} ${k.variation_points !== undefined ? "pts" : unit}</span> <span class="muted">vs période précédente</span>`;
+}
+
+// ---------------------------------------------------------------------------
+// Page : Synthèse
+// ---------------------------------------------------------------------------
+async function renderSynthese() {
+  const days = Number(state.days || 30); state.days = days;
+  const [k, t, r, top] = await Promise.all([
+    api(`/dashboard/kpis/?days=${days}`), api(`/dashboard/timeline/?days=${days}`),
+    api(`/dashboard/risk-distribution/?days=${days}`), api(`/dashboard/top-targets/?days=${days}`)]);
+  const K = k.kpis;
+  const sel = [7, 30, 90].map((d) => `<option value="${d}" ${d === days ? "selected" : ""}>${d} derniers jours</option>`).join("");
+  $("#view").innerHTML = `
+    <div class="toolbar"><h2 style="margin:0;flex:1">Synthèse</h2>
+      <div><label for="days" style="margin:0 0 3px">Période</label><select id="days">${sel}</select></div></div>
+    <div class="muted small" style="margin:-6px 0 14px">Du ${fmtDate(k.period.start)} au ${fmtDate(k.period.end)} (dernier événement connu)</div>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Connexions</div><div class="v">${fmtInt(K.connexions.value)}</div><div class="d">${variation(K.connexions)}</div></div>
+      <div class="kpi"><div class="l">Taux d'échec</div><div class="v">${K.taux_echec.value} %</div><div class="d">${variation(K.taux_echec)}</div></div>
+      <div class="kpi"><div class="l">Alertes générées</div><div class="v">${fmtInt(K.alertes.value)}</div><div class="d">${variation(K.alertes)}</div></div>
+      <div class="kpi"><div class="l">Alertes critiques</div><div class="v">${fmtInt(K.alertes_critiques.value)}</div><div class="d">${variation(K.alertes_critiques)}</div></div>
+      <div class="kpi"><div class="l">Alertes ouvertes</div><div class="v">${fmtInt(K.alertes_ouvertes.value)}</div><div class="d">dont ${fmtInt(K.alertes_ouvertes.critiques)} critiques</div></div>
+    </div>
+    <div class="row">
+      <div class="card"><h3>Connexions par jour</h3>${lineChart(t.points, "connexions", "#1d4ed8")}</div>
+      <div class="card"><h3>Alertes par jour <span class="muted small">(rouge : critiques)</span></h3>${barChart(t.points)}</div>
+    </div>
+    <div class="row">
+      <div class="card"><h3>Répartition par niveau de risque</h3>${r.total ? donut(r.distribution) : `<div class="empty">Aucune évaluation.</div>`}</div>
+      <div class="card"><h3>Pays les plus concernés <span class="muted small">(suspect + haut risque)</span></h3>
+        ${top.pays.length ? `<table><tr><th>Pays</th><th>Événements</th><th>Haut risque</th></tr>${top.pays.map((p) => `<tr><td>${esc(p.pays)}</td><td>${fmtInt(p.evenements)}</td><td>${fmtInt(p.haut_risque)}</td></tr>`).join("")}</table>` : `<div class="empty">—</div>`}</div>
+    </div>
+    <div class="row">
+      <div class="card"><h3>Comptes les plus ciblés</h3><div class="tw">
+        ${top.comptes.length ? `<table><tr><th>Compte</th><th>Alertes</th><th>Haut risque</th></tr>${top.comptes.map((c) => `<tr><td>${esc(c.email)}</td><td>${c.alertes}</td><td>${c.haut_risque}</td></tr>`).join("")}</table>` : `<div class="empty">—</div>`}</div></div>
+      <div class="card"><h3>Sources les plus actives <span class="muted small">(adresses pseudonymisées)</span></h3><div class="tw">
+        ${top.sources.length ? `<table><tr><th>Source</th><th>Événements</th><th>Comptes visés</th></tr>${top.sources.map((s) => `<tr><td><code>${esc(s.source)}…</code></td><td>${s.evenements}</td><td>${s.comptes_cibles}</td></tr>`).join("")}</table>` : `<div class="empty">—</div>`}</div></div>
+    </div>`;
+  $("#days").onchange = (e) => { state.days = e.target.value; go("synthese"); };
+}
+
+// ---------------------------------------------------------------------------
+// Page : Alertes (liste + détail)
+// ---------------------------------------------------------------------------
+async function renderAlertes() {
+  const f = state.alertFilter || (state.alertFilter = { status: "", severity: "", page: 1 });
+  const qs = new URLSearchParams({ page: f.page }); if (f.status) qs.set("status", f.status); if (f.severity) qs.set("severity", f.severity);
+  const d = await api("/alerts/?" + qs);
+  const opt = (obj, cur) => `<option value="">Tous</option>` + Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${v}</option>`).join("");
+  const pages = Math.max(1, Math.ceil(d.count / 50));
+  $("#view").innerHTML = `
+    <h2>Alertes</h2>
+    <div class="toolbar">
+      <div><label for="fs" style="margin:0 0 3px">Statut</label><select id="fs">${opt(STATUS, f.status)}</select></div>
+      <div><label for="fg" style="margin:0 0 3px">Gravité</label><select id="fg">${opt(SEVERITY, f.severity)}</select></div>
+      <div class="muted small" style="padding-bottom:10px">${fmtInt(d.count)} alerte(s) — ouvertes d'abord, critiques en tête</div>
+    </div>
+    <div class="row" style="align-items:flex-start">
+      <div class="card" style="flex:2 1 520px"><div class="tw">
+        ${d.results.length ? `<table><tr><th>Gravité</th><th>Statut</th><th>Compte</th><th>Lieu</th><th>Score</th><th>Date</th></tr>
+        ${d.results.map((a) => `<tr class="click ${a.id === state.selectedAlert ? "sel" : ""}" data-id="${a.id}"><td>${badge(a.severity, SEVERITY[a.severity])}</td><td>${badge(a.status, STATUS[a.status])}</td><td>${esc(a.user_email)}</td><td>${esc(a.city)}, ${esc(a.country)}</td><td>${a.score.toFixed(2)}</td><td>${fmtDate(a.timestamp)}</td></tr>`).join("")}</table>` : `<div class="empty">Aucune alerte pour ces filtres.</div>`}</div>
+        <div class="pager"><button id="prev" ${f.page <= 1 ? "disabled" : ""}>←</button> page ${f.page} / ${pages} <button id="next" ${f.page >= pages ? "disabled" : ""}>→</button></div></div>
+      <div id="detail" class="card" style="flex:1 1 340px"><div class="empty">Cliquez sur une alerte pour voir son détail.</div></div>
+    </div>`;
+  $("#fs").onchange = (e) => { f.status = e.target.value; f.page = 1; go("alertes"); };
+  $("#fg").onchange = (e) => { f.severity = e.target.value; f.page = 1; go("alertes"); };
+  $("#prev").onclick = () => { f.page--; go("alertes"); }; $("#next").onclick = () => { f.page++; go("alertes"); };
+  document.querySelectorAll("tr.click").forEach((tr) => tr.onclick = () => openAlert(Number(tr.dataset.id)));
+  if (state.selectedAlert) openAlert(state.selectedAlert, true);
+}
+function scoreGauge(score, level) {
+  const color = level === "HAUT_RISQUE" ? "#dc2626" : level === "SUSPECT" ? "#f59e0b" : "#16a34a";
+  return `<div class="gauge"><i style="width:${Math.round(score * 100)}%;background:${color}"></i></div>`;
+}
+async function openAlert(id, keepList) {
+  state.selectedAlert = id;
+  if (!keepList) document.querySelectorAll("tr.click").forEach((tr) => tr.classList.toggle("sel", Number(tr.dataset.id) === id));
+  const box = $("#detail"); if (!box) return;
+  let a;
+  try { a = await api(`/alerts/${id}/`); } catch (e) { box.innerHTML = `<b>Erreur :</b> ${esc(e.message)}`; return; }
+  const ev = a.event, e = ev.evaluation;
+  box.innerHTML = `
+    <h3>Alerte #${a.id} ${badge(a.severity, SEVERITY[a.severity])} ${badge(a.status, STATUS[a.status])}</h3>
+    <div class="small muted">${esc(a.user_email)} · ${fmtDate(ev.timestamp)}</div>
+    <div style="margin-top:10px"><b>Score de risque : ${e.score.toFixed(2)}</b> ${badge(e.level, LEVEL[e.level])}${scoreGauge(e.score, e.level)}
+      <div class="small muted">Modèle ${(e.ml_score ?? 0).toFixed(2)} · Règles ${e.rules_score.toFixed(2)} · version ${esc(e.model_version)}</div></div>
+    <div style="margin-top:10px"><b>Pourquoi cette alerte ?</b>
+      ${e.reasons.length ? `<ul class="reasons">${e.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<div class="small muted">Aucun motif détaillé.</div>`}</div>
+    <div class="grid2 small" style="margin-top:10px">
+      <div><span class="muted">Lieu</span><br>${esc(ev.city)}, ${esc(ev.country)}</div>
+      <div><span class="muted">Appareil</span><br>${esc(ev.device_label)}</div>
+      <div><span class="muted">Résultat</span><br>${ev.success ? "Connexion réussie" : "Échec — " + esc(ev.failure_reason)}</div>
+      <div><span class="muted">Source (pseudonyme)</span><br><code>${esc(ev.ip_hash.slice(0, 10))}…</code></div>
+      ${ev.label ? `<div><span class="muted">Vérité terrain (jeu simulé)</span><br>${esc(ev.label)} / ${esc(ev.attack_type)}</div>` : ""}
+    </div>
+    <div style="margin-top:12px"><b>Dernières connexions du compte</b>
+      <table class="small">${a.recent_events.map((r) => `<tr><td>${fmtDate(r.timestamp)}</td><td>${esc(r.city)}</td><td>${r.success ? "ok" : "échec"}</td><td>${r.level ? badge(r.level, LEVEL[r.level]) : ""}</td></tr>`).join("")}</table></div>
+    <label for="cmt">Commentaire</label><textarea id="cmt" rows="2">${esc(a.comment)}</textarea>
+    <div class="actions">
+      <button data-s="EN_COURS">En cours</button><button data-s="TRAITEE" class="primary">Traitée</button><button data-s="FAUSSE_ALERTE">Fausse alerte</button>
+      <button id="blk" class="danger">Bloquer le compte (60 min)</button></div>
+    <div class="small muted" style="margin-top:8px">${a.handled_by_email ? `Dernier traitement par ${esc(a.handled_by_email)}` : ""}</div>`;
+  box.querySelectorAll("button[data-s]").forEach((b) => b.onclick = async () => {
+    try { await api(`/alerts/${id}/`, { method: "PATCH", body: { status: b.dataset.s, comment: $("#cmt").value } }); toast("Alerte mise à jour (journalisée)"); go("alertes"); }
+    catch (err) { toast(err.message); }
+  });
+  $("#blk").onclick = async () => {
+    if (!confirm(`Bloquer ${a.user_email} pendant 60 minutes ?`)) return;
+    try { await api(`/alerts/${id}/block-user/`, { method: "POST", body: { minutes: 60 } }); toast("Compte bloqué (journalisé)"); }
+    catch (err) { toast(err.message); }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page : Historique des connexions
+// ---------------------------------------------------------------------------
+async function renderHistorique() {
+  const f = state.histFilter || (state.histFilter = { level: "", success: "", search: "", page: 1 });
+  const qs = new URLSearchParams({ page: f.page }); if (f.level) qs.set("level", f.level); if (f.success) qs.set("success", f.success); if (f.search) qs.set("search", f.search);
+  const d = await api("/events/?" + qs);
+  const pages = Math.max(1, Math.ceil(d.count / 50));
+  $("#view").innerHTML = `
+    <h2>Historique des connexions</h2>
+    <div class="toolbar">
+      <div><label for="hl" style="margin:0 0 3px">Niveau de risque</label><select id="hl"><option value="">Tous</option>${Object.entries(LEVEL).map(([k, v]) => `<option value="${k}" ${f.level === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+      <div><label for="hs" style="margin:0 0 3px">Résultat</label><select id="hs"><option value="">Tous</option><option value="true" ${f.success === "true" ? "selected" : ""}>Réussies</option><option value="false" ${f.success === "false" ? "selected" : ""}>Échecs</option></select></div>
+      <div><label for="hq" style="margin:0 0 3px">Compte (e-mail)</label><input id="hq" value="${esc(f.search)}" placeholder="rechercher…"></div>
+      <button id="hgo">Filtrer</button><div class="muted small" style="padding-bottom:10px">${fmtInt(d.count)} connexion(s)</div>
+    </div>
+    <div class="card"><div class="tw">${d.results.length ? `<table><tr><th>Date</th><th>Compte</th><th>Lieu</th><th>Appareil</th><th>Résultat</th><th>Risque</th><th>Score</th></tr>
+      ${d.results.map((e) => `<tr><td>${fmtDate(e.timestamp)}</td><td>${esc(e.user_email)}</td><td>${esc(e.city)}, ${esc(e.country)}</td><td class="small">${esc(e.device_label)}</td><td>${e.success ? "Réussie" : "Échec"}</td><td>${e.evaluation ? badge(e.evaluation.level, LEVEL[e.evaluation.level]) : "—"}</td><td>${e.evaluation ? e.evaluation.score.toFixed(2) : ""}</td></tr>`).join("")}</table>` : `<div class="empty">Aucune connexion pour ces filtres.</div>`}</div>
+      <div class="pager"><button id="prev" ${f.page <= 1 ? "disabled" : ""}>←</button> page ${f.page} / ${pages} <button id="next" ${f.page >= pages ? "disabled" : ""}>→</button></div></div>`;
+  $("#hgo").onclick = () => { f.level = $("#hl").value; f.success = $("#hs").value; f.search = $("#hq").value.trim(); f.page = 1; go("historique"); };
+  $("#prev").onclick = () => { f.page--; go("historique"); }; $("#next").onclick = () => { f.page++; go("historique"); };
+}
+
+// ---------------------------------------------------------------------------
+// Page : Simulateur de tentative de connexion (démonstration en direct)
+// ---------------------------------------------------------------------------
+const PRESETS = {
+  normal: { label: "Connexion normale", city: "domicile", failures: 0, success: true, device: "known", hour: "" },
+  paysNouveau: { label: "Pays inhabituel", city: "Paris", failures: 0, success: true, device: "known", hour: "" },
+  forceBrute: { label: "Force brute", city: "Moscou", failures: 12, success: false, device: "new", hour: "" },
+  priseControle: { label: "Prise de contrôle", city: "Moscou", failures: 4, success: true, device: "new", hour: "3" },
+};
+async function renderSimulateur() {
+  const places = await api("/events/places/");
+  $("#view").innerHTML = `
+    <h2>Simulateur de tentative de connexion</h2>
+    <div class="row" style="align-items:flex-start">
+      <div class="card">
+        <div class="presets">${Object.entries(PRESETS).map(([k, p]) => `<button data-pre="${k}">${p.label}</button>`).join("")}</div>
+        <label for="su">Compte ciblé (e-mail)</label><input id="su" list="ulist" placeholder="tapez pour rechercher…" autocomplete="off"><datalist id="ulist"></datalist>
+        <div class="grid2">
+          <div><label for="sc">Lieu de la tentative</label><select id="sc">${places.map((p) => `<option value="${esc(p.city)}">${p.city === "domicile" ? "Ville d'attache du compte" : esc(p.city) + " (" + esc(p.country) + ")"}</option>`).join("")}</select></div>
+          <div><label for="sd">Appareil</label><select id="sd"><option value="known">Appareil habituel</option><option value="new">Nouvel appareil</option></select></div>
+          <div><label for="sf">Échecs juste avant (0–40)</label><input id="sf" type="number" min="0" max="40" value="0"></div>
+          <div><label for="sh">Heure UTC (vide = maintenant)</label><input id="sh" type="number" min="0" max="23" placeholder="ex. 3"></div>
+        </div>
+        <label><input id="ss" type="checkbox" checked style="width:auto"> La tentative finale réussit</label>
+        <div class="err" id="simErr"></div>
+        <button class="primary" id="simGo">Simuler la tentative</button>
+        <p class="small muted">La tentative est réellement enregistrée, évaluée par le moteur hybride, et crée une alerte si elle est suspecte.</p>
+      </div>
+      <div class="card" id="simResult"><div class="empty">Choisissez un scénario, un compte, puis lancez la simulation.</div></div>
+    </div>`;
+  let userMap = {};
+  const loadUsers = async (q) => {
+    try {
+      const d = await api(`/users/?role=UTILISATEUR&page_size=20${q ? "&search=" + encodeURIComponent(q) : ""}`);
+      userMap = {}; d.results.forEach((u) => userMap[u.email] = u.id);
+      $("#ulist").innerHTML = d.results.map((u) => `<option value="${esc(u.email)}">${esc(u.full_name)}</option>`).join("");
+      if (!$("#su").value && d.results.length) $("#su").value = d.results[0].email;
+    } catch (e) {}
+  };
+  await loadUsers("");
+  let t; $("#su").oninput = () => { clearTimeout(t); t = setTimeout(() => loadUsers($("#su").value.trim()), 250); };
+  document.querySelectorAll("[data-pre]").forEach((b) => b.onclick = () => {
+    const p = PRESETS[b.dataset.pre]; $("#sc").value = p.city; $("#sf").value = p.failures; $("#ss").checked = p.success; $("#sd").value = p.device; $("#sh").value = p.hour;
+  });
+  $("#simGo").onclick = async () => {
+    $("#simErr").textContent = "";
+    const uid = userMap[$("#su").value.trim()];
+    if (!uid) { $("#simErr").textContent = "Choisissez un compte dans la liste proposée."; return; }
+    const body = { user: uid, city: $("#sc").value, success: $("#ss").checked, failures: Number($("#sf").value || 0), device: $("#sd").value };
+    if ($("#sh").value !== "") body.hour = Number($("#sh").value);
+    $("#simGo").disabled = true;
+    try {
+      const d = await api("/events/simulate/", { method: "POST", body });
+      const e = d.event.evaluation;
+      $("#simResult").innerHTML = `
+        <h3>Résultat ${badge(e.level, LEVEL[e.level])}</h3>
+        <div style="font-size:30px;font-weight:700">${e.score.toFixed(2)}</div>${scoreGauge(e.score, e.level)}
+        <div class="small muted">Modèle ${(e.ml_score ?? 0).toFixed(2)} · Règles ${e.rules_score.toFixed(2)} · ${esc(e.model_version)}</div>
+        <div style="margin-top:10px"><b>Motifs</b>${e.reasons.length ? `<ul class="reasons">${e.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<div class="small muted">Aucune règle déclenchée : comportement habituel.</div>`}</div>
+        <div class="small muted">${esc(d.event.user_email)} · ${esc(d.event.city)}, ${esc(d.event.country)} · ${esc(d.event.device_label)}${d.failures_created ? ` · ${d.failures_created} échec(s) précédents` : ""}</div>
+        <div style="margin-top:12px">${d.alert ? `${badge(d.alert.severity, SEVERITY[d.alert.severity])} Alerte #${d.alert.id} créée. <button id="seeAlert">Voir l'alerte</button>` : `<span class="b NORMAL">Aucune alerte créée</span>`}</div>`;
+      if (d.alert) $("#seeAlert").onclick = () => { state.selectedAlert = d.alert.id; state.alertFilter = { status: "", severity: "", page: 1 }; go("alertes"); };
+    } catch (err) { $("#simErr").textContent = err.message; }
+    finally { $("#simGo").disabled = false; }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page : Modèle (métriques d'évaluation)
+// ---------------------------------------------------------------------------
+async function renderModele() {
+  const m = await api("/ml/model/"), t = m.metrics.test, V = ["normal", "suspect", "haut_risque"];
+  const cfg = [["regles_seules", "Règles seules"], ["modele_seul", "Modèle seul"], ["hybride", "Hybride (règles + ML)"]];
+  const pc = (x) => (x * 100).toFixed(0) + " %";
+  const cm = t.hybride.matrice_confusion;
+  const imp = Object.entries(m.metrics.importance_variables).slice(0, 8), maxImp = imp[0] ? imp[0][1] : 1;
+  $("#view").innerHTML = `
+    <h2>Modèle de détection</h2>
+    <div class="warnbox">⚠️ ${esc(m.metrics.avertissement)}</div>
+    <div class="card"><b>Version active :</b> ${esc(m.version)} · ${esc(m.algorithm)}<br>
+      <span class="small muted">Entraîné le ${fmtDate(m.trained_at)} · seuils : suspect ≥ ${m.thresholds.suspect}, haut risque ≥ ${m.thresholds.haut_risque} (calibrés sur la validation) ·
+      découpage chronologique : ${fmtInt(m.metrics.decoupage.train)} entraînement / ${fmtInt(m.metrics.decoupage.validation)} validation / ${fmtInt(m.metrics.decoupage.test)} test</span></div>
+    <div class="card"><h3>Résultats sur le jeu de test (jamais vu à l'entraînement)</h3><div class="tw"><table>
+      <tr><th>Configuration</th><th>F1 suspect</th><th>F1 haut risque</th><th>Rappel haut risque</th><th>Précision alertes</th><th>Rappel alertes</th></tr>
+      ${cfg.map(([k, label]) => { const x = t[k]; return `<tr${k === "hybride" ? ' style="font-weight:700;background:#f0fdf4"' : ""}><td>${label}</td><td>${x.par_classe.suspect.f1.toFixed(2)}</td><td>${x.par_classe.haut_risque.f1.toFixed(2)}</td><td>${pc(x.par_classe.haut_risque.rappel)}</td><td>${pc(x.alertes.precision)}</td><td>${pc(x.alertes.rappel)}</td></tr>`; }).join("")}
+    </table></div><div class="small muted" style="margin-top:8px">Cibles du cahier des charges : rappel haut risque ≥ 90 %, précision des alertes ≥ 80 %.</div></div>
+    <div class="row">
+      <div class="card"><h3>Matrice de confusion (hybride, test)</h3><table class="matrix"><tr><th>réel ↓ / prédit →</th>${V.map((v) => `<th>${LEVEL[v.toUpperCase()]}</th>`).join("")}</tr>
+        ${cm.map((row, i) => `<tr><th>${LEVEL[V[i].toUpperCase()]}</th>${row.map((n, j) => `<td class="${i === j ? "diag" : n ? "off" : ""}">${fmtInt(n)}</td>`).join("")}</tr>`).join("")}</table></div>
+      <div class="card"><h3>Variables les plus importantes</h3>${imp.map(([k, v]) => `<div class="bar"><span class="t">${esc(k)}</span><span class="f" style="width:${(v / maxImp) * 140}px"></span><span class="n">${(v * 100).toFixed(1)} %</span></div>`).join("")}</div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Page : Administration (comptes + journal d'audit)
+// ---------------------------------------------------------------------------
+async function renderAdmin() {
+  const [audit, users] = await Promise.all([api("/audit/"), api("/users/?role=UTILISATEUR&ordering=-id")]);
+  $("#view").innerHTML = `
+    <h2>Administration</h2>
+    <div class="card"><h3>Journal d'audit <span class="muted small">(actions administratives : qui, quoi, quand)</span></h3><div class="tw">
+      ${audit.results.length ? `<table><tr><th>Date</th><th>Auteur</th><th>Action</th><th>Cible</th><th>Détails</th></tr>${audit.results.map((a) => `<tr><td>${fmtDate(a.created_at)}</td><td>${esc(a.actor_email || "—")}</td><td><b>${esc(a.action)}</b></td><td>${esc(a.target)}</td><td class="small muted">${esc(JSON.stringify(a.details))}</td></tr>`).join("")}</table>` : `<div class="empty">Aucune action journalisée.</div>`}</div></div>
+    <div class="card"><h3>Comptes <span class="muted small">(${fmtInt(users.count)} utilisateurs)</span></h3><div class="tw"><table>
+      <tr><th>E-mail</th><th>Ville</th><th>État</th><th></th></tr>
+      ${users.results.slice(0, 15).map((u) => `<tr><td>${esc(u.email)}</td><td>${esc(u.home_city)}</td><td>${u.is_blocked ? '<span class="b CRITIQUE">Bloqué</span>' : '<span class="b TRAITEE">Actif</span>'}</td><td>${u.is_blocked ? `<button data-unb="${u.id}">Débloquer</button>` : ""}</td></tr>`).join("")}</table></div></div>`;
+  document.querySelectorAll("[data-unb]").forEach((b) => b.onclick = async () => {
+    try { await api(`/users/${b.dataset.unb}/unblock/`, { method: "POST" }); toast("Compte débloqué"); go("admin"); } catch (e) { toast(e.message); }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Démarrage
+// ---------------------------------------------------------------------------
+$("#loginBtn").onclick = login;
+$("#password").onkeydown = (e) => { if (e.key === "Enter") login(); };
+$("#logoutBtn").onclick = () => logout(false);
+$("#nav").onclick = (e) => { const b = e.target.closest("button[data-p]"); if (b) go(b.dataset.p); };
+try {
+  const s = JSON.parse(sessionStorage.getItem("sa_session") || "null");
+  if (s && s.a) { state.access = s.a; state.refresh = s.r; state.user = s.u; startApp(); }
+} catch (e) {}
+</script>
+</body>
+</html>

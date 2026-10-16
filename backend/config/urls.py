@@ -1,22 +1,25 @@
 """
-URL configuration for config project.
+FICHIER : config/urls.py
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+RÔLE
+    Table de routage principale du projet : point de départ de toutes les adresses.
+      /admin/        site d'administration Django
+      /api/...       l'API REST (accounts, audit, events, alerts, dashboard, ml)
+      /api/schema/   description OpenAPI de l'API (fichier lisible par les machines)
+      /api/docs/     documentation interactive (Swagger) : on peut y tester l'API
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path("admin/", admin.site.urls),
+    path("api/", include("apps.accounts.urls")),
+    path("api/", include("apps.audit.urls")),
+    path("api/", include("apps.events.urls")),
+    path("api/", include("apps.alerts.urls")),
+    path("api/", include("apps.dashboard.urls")),
+    path("api/", include("apps.detection.urls")),
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
 ]
