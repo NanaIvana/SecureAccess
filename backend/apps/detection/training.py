@@ -1,29 +1,26 @@
+
 """
 FICHIER : apps/detection/training.py
 
-RÔLE
-    Entraîne et évalue le détecteur. Il :
-      1. découpe les données DANS LE TEMPS : 120 premiers jours = entraînement, 30 jours
-         suivants = validation, le reste = test (jamais vu pendant l'entraînement) ;
-      2. entraîne deux modèles : un Isolation Forest (anomalies, appris sur les connexions
-         normales seulement) et un Random Forest (classification, appris avec les étiquettes) ;
-      3. choisit les seuils « suspect » / « haut risque » sur la VALIDATION ;
-      4. mesure la qualité sur le TEST : règles seules, modèle seul, et hybride (les deux).
+ROLE
+    Entraîne et évalue le détecteur de comportements suspects.
 
-POURQUOI UN DÉCOUPAGE PAR DATE ?
-    Dans la réalité, on prédit l'avenir à partir du passé. Mélanger les dates au hasard
-    donnerait des résultats trop optimistes.
+ETAPES
+    1. Découpage chronologique : entraînement, validation et test.
+    2. Entraînement d'un Isolation Forest sur les connexions normales.
+    3. Entraînement d'un Random Forest sur les événements étiquetés.
+    4. Calibrage des seuils uniquement sur la validation.
+    5. Évaluation finale sur le jeu de test.
 
-ATTENTION
-    Le jeu de données est synthétique : les scores obtenus ne préjugent pas des
-    performances sur de vraies données.
-
-UTILISÉ PAR : commande train_model
+IMPORTANT
+    Le jeu de test n'intervient jamais dans le choix des seuils.
 """
+
 import json
 
 import numpy as np
 import pandas as pd
+
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
@@ -31,109 +28,505 @@ from .engine import LEVELS, W_ISO, W_SUP, combine, level_from_score
 from .features import FEATURE_COLUMNS
 from .rules import apply_rules
 
-# Couples de seuils (suspect, haut risque) testés ; on garde le meilleur sur la validation.
-CANDIDATE_THRESHOLDS = [(0.35, 0.65), (0.30, 0.60), (0.25, 0.55)]
+
+# Couples de seuils candidats : (suspect, haut risque).
+CANDIDATE_THRESHOLDS = [
+    (0.35, 0.65),
+    (0.30, 0.60),
+    (0.25, 0.55),
+]
+
+
+def _validate_inputs(feats, labels, timestamps, train_days, val_days):
+    """
+    Vérifie les données avant de lancer l'entraînement.
+    """
+
+    if not isinstance(feats, pd.DataFrame):
+        raise TypeError("feats doit être un DataFrame pandas.")
+
+    if feats.empty:
+        raise ValueError("Aucune donnée disponible pour l'entraînement.")
+
+    if not feats.index.is_unique:
+        raise ValueError("Les index des événements doivent être uniques.")
+
+    if not feats.columns.is_unique:
+        raise ValueError("Les colonnes des variables doivent être uniques.")
+
+    missing = [col for col in FEATURE_COLUMNS if col not in feats.columns]
+
+    if missing:
+        raise ValueError(
+            f"Variables manquantes dans les données : {missing}"
+        )
+
+    if isinstance(labels, pd.Series):
+        if not labels.index.equals(feats.index):
+            raise ValueError(
+                "Les index de labels et de feats ne correspondent pas."
+            )
+        y = labels.to_numpy()
+    else:
+        y = np.asarray(labels)
+
+    if isinstance(timestamps, pd.Series):
+        if not timestamps.index.equals(feats.index):
+            raise ValueError(
+                "Les index de timestamps et de feats ne correspondent pas."
+            )
+        dates = timestamps.to_numpy()
+    else:
+        dates = np.asarray(timestamps)
+
+    if len(y) != len(feats) or len(dates) != len(feats):
+        raise ValueError(
+            "Les nombres de features, labels et timestamps doivent être égaux."
+        )
+
+    if pd.isna(y).any():
+        raise ValueError("Certaines étiquettes sont manquantes.")
+
+    unknown_labels = set(y) - set(LEVELS)
+
+    if unknown_labels:
+        raise ValueError(
+            f"Étiquettes inconnues : {unknown_labels}. "
+            f"Valeurs autorisées : {LEVELS}"
+        )
+
+    if train_days <= 0 or val_days <= 0:
+        raise ValueError(
+            "train_days et val_days doivent être strictement positifs."
+        )
+
+    dates = pd.to_datetime(dates, errors="coerce")
+
+    if pd.isna(dates).any():
+        raise ValueError("Certaines dates sont invalides ou manquantes.")
+
+    # Vérification et conversion des variables numériques.
+    x = feats[FEATURE_COLUMNS].apply(
+        pd.to_numeric,
+        errors="coerce"
+    )
+
+    values = x.to_numpy(dtype=float)
+
+    if not np.isfinite(values).all():
+        raise ValueError(
+            "Les variables contiennent des valeurs manquantes "
+            "ou non finies. Vérifier features.py et dataio.py."
+        )
+
+    return x, y, dates
 
 
 def _rules_arrays(x):
-    """Score des règles et indicateur « règle critique » pour chaque ligne de features."""
-    scores, critical = [], []
+    """
+    Calcule le score des règles et l'indicateur de criticité
+    pour chaque événement.
+    """
+
+    scores = []
+    critical = []
+
     for _, row in x.iterrows():
-        s, _, _, c = apply_rules(row)
-        scores.append(s)
-        critical.append(c)
-    return np.array(scores), np.array(critical)
+        score, _, _, is_critical = apply_rules(row)
+
+        scores.append(score)
+        critical.append(is_critical)
+
+    return (
+        np.asarray(scores, dtype=float),
+        np.asarray(critical, dtype=bool)
+    )
 
 
 def _metrics(y_true, y_pred):
-    """Précision, rappel et F1 par niveau ; précision et rappel des alertes ; matrice de confusion.
-    « Alerte » = tout ce qui n'est pas « normal » (suspect ou haut risque)."""
-    p, r, f, _ = precision_recall_fscore_support(y_true, y_pred, labels=LEVELS, zero_division=0)
-    true_alert, pred_alert = y_true != "normal", y_pred != "normal"
-    hits = (true_alert & pred_alert).sum()  # vraies alertes correctement détectées
+    """
+    Calcule les métriques de classification.
+
+    Une alerte correspond à un événement suspect ou haut risque.
+    """
+
+    if len(y_true) == 0:
+        raise ValueError(
+            "Impossible de calculer les métriques sur un ensemble vide."
+        )
+
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_true,
+        y_pred,
+        labels=LEVELS,
+        zero_division=0
+    )
+
+    true_alert = y_true != "normal"
+    predicted_alert = y_pred != "normal"
+
+    hits = (true_alert & predicted_alert).sum()
+
+    alert_precision = hits / max(predicted_alert.sum(), 1)
+    alert_recall = hits / max(true_alert.sum(), 1)
+
     return {
-        "par_classe": {lvl: {"precision": float(p[i]), "rappel": float(r[i]), "f1": float(f[i])}
-                       for i, lvl in enumerate(LEVELS)},
-        "alertes": {"precision": float(hits / max(pred_alert.sum(), 1)), "rappel": float(hits / max(true_alert.sum(), 1))},
-        "matrice_confusion": confusion_matrix(y_true, y_pred, labels=LEVELS).tolist(),
+        "par_classe": {
+            level: {
+                "precision": float(precision[i]),
+                "rappel": float(recall[i]),
+                "f1": float(f1[i])
+            }
+            for i, level in enumerate(LEVELS)
+        },
+
+        "alertes": {
+            "precision": float(alert_precision),
+            "rappel": float(alert_recall)
+        },
+
+        "matrice_confusion": confusion_matrix(
+            y_true,
+            y_pred,
+            labels=LEVELS
+        ).tolist()
     }
 
 
-def train_detector(feats, labels, timestamps, train_days=120, val_days=30, seed=42):
-    """feats : features ; labels : étiquettes réelles ; timestamps : dates (alignés sur feats.index).
-    Retourne (artefact à sauvegarder, dictionnaire de métriques)."""
-    # --- 1. Découpage dans le temps ---
-    start = timestamps.min().normalize()
-    train = timestamps < start + pd.Timedelta(days=train_days)
-    val = (timestamps >= start + pd.Timedelta(days=train_days)) & (timestamps < start + pd.Timedelta(days=train_days + val_days))
-    test = timestamps >= start + pd.Timedelta(days=train_days + val_days)
+def train_detector(
+    feats,
+    labels,
+    timestamps,
+    train_days=120,
+    val_days=30,
+    seed=42
+):
+    """
+    Entraîne le détecteur et retourne :
 
-    x_tr, y_tr = feats[train], labels[train]
-    normal_tr = x_tr[y_tr == "normal"]
+        artifact : modèles et paramètres à sauvegarder.
+        metrics  : résultats de l'évaluation.
 
-    # --- 2a. Isolation Forest : apprend le comportement « normal » ---
-    iso = IsolationForest(n_estimators=200, random_state=seed, n_jobs=-1).fit(normal_tr)
-    raw_tr = -iso.score_samples(normal_tr)
-    # Bornes servant à ramener le score d'anomalie entre 0 et 1 (médiane -> 0, percentile 99,5 -> 1).
-    iso_lo, iso_hi = float(np.percentile(raw_tr, 50)), float(np.percentile(raw_tr, 99.5))
+    Les données doivent être alignées dans le même ordre.
+    """
 
-    # --- 2b. Random Forest : apprend à reconnaître normal / suspect / haut risque ---
-    # class_weight : compense le fait que les attaques sont rares par rapport aux connexions normales.
-    rf = RandomForestClassifier(n_estimators=300, class_weight="balanced_subsample", min_samples_leaf=2,
-                                n_jobs=-1, random_state=seed).fit(x_tr, y_tr)
+    # ---------------------------------------------------------
+    # 1. Validation des données
+    # ---------------------------------------------------------
+
+    x, y, dates = _validate_inputs(
+        feats,
+        labels,
+        timestamps,
+        train_days,
+        val_days
+    )
+
+    # ---------------------------------------------------------
+    # 2. Découpage chronologique
+    # ---------------------------------------------------------
+
+    start = dates.min().normalize()
+
+    train_end = start + pd.Timedelta(days=train_days)
+    val_end = train_end + pd.Timedelta(days=val_days)
+
+    train_mask = np.asarray(dates < train_end)
+    val_mask = np.asarray(
+        (dates >= train_end) & (dates < val_end)
+    )
+    test_mask = np.asarray(dates >= val_end)
+
+    x_tr = x.iloc[np.flatnonzero(train_mask)]
+    y_tr = y[train_mask]
+
+    x_val = x.iloc[np.flatnonzero(val_mask)]
+    y_val = y[val_mask]
+
+    x_test = x.iloc[np.flatnonzero(test_mask)]
+    y_test = y[test_mask]
+
+    if len(x_tr) == 0:
+        raise ValueError("L'ensemble d'entraînement est vide.")
+
+    if len(x_val) == 0:
+        raise ValueError(
+            "L'ensemble de validation est vide. "
+            "Il faut davantage de données sur la période choisie."
+        )
+
+    if len(x_test) == 0:
+        raise ValueError(
+            "L'ensemble de test est vide. "
+            "Il faut davantage de données sur la période choisie."
+        )
+
+    # ---------------------------------------------------------
+    # 3. Préparation des connexions normales
+    # ---------------------------------------------------------
+
+    normal_mask = y_tr == "normal"
+    normal_tr = x_tr.iloc[np.flatnonzero(normal_mask)]
+
+    if len(normal_tr) < 2:
+        raise ValueError(
+            "Isolation Forest nécessite au moins deux événements normaux."
+        )
+
+    # ---------------------------------------------------------
+    # 4. Entraînement de l'Isolation Forest
+    # ---------------------------------------------------------
+
+    iso = IsolationForest(
+        n_estimators=200,
+        random_state=seed,
+        n_jobs=-1
+    )
+
+    iso.fit(normal_tr)
+
+    raw_normal = -iso.score_samples(normal_tr)
+
+    # Médiane et percentile 99,5 pour normaliser les anomalies.
+    iso_lo = float(np.percentile(raw_normal, 50))
+    iso_hi = float(np.percentile(raw_normal, 99.5))
+
+    # ---------------------------------------------------------
+    # 5. Entraînement du Random Forest
+    # ---------------------------------------------------------
+
+    rf = RandomForestClassifier(
+        n_estimators=300,
+        class_weight="balanced_subsample",
+        min_samples_leaf=2,
+        n_jobs=-1,
+        random_state=seed
+    )
+
+    rf.fit(x_tr, y_tr)
+
     classes = list(rf.classes_)
 
-    def ml_score(x):
-        """Score ML : même formule que dans engine.py (Detector.ml_scores)."""
-        proba = rf.predict_proba(x)
-        sup = proba[:, classes.index("suspect")] * 0.5 + proba[:, classes.index("haut_risque")]
-        anomaly = np.clip((-iso.score_samples(x) - iso_lo) / (iso_hi - iso_lo), 0, 1)
-        return W_SUP * sup + W_ISO * anomaly
+    # Les classes absentes sont traitées comme une contribution nulle.
+    suspect_index = (
+        classes.index("suspect")
+        if "suspect" in classes else None
+    )
 
-    def levels(scores, th):
-        """Convertit des scores en niveaux avec un couple de seuils (suspect, haut risque)."""
-        return np.array([level_from_score(s, {"suspect": th[0], "haut_risque": th[1]}) for s in scores])
+    high_risk_index = (
+        classes.index("haut_risque")
+        if "haut_risque" in classes else None
+    )
 
-    # --- 3. Scores sur la validation et sur le test ---
+    # ---------------------------------------------------------
+    # 6. Calcul du score ML
+    # ---------------------------------------------------------
+
+    def ml_score(data):
+        """
+        Combine :
+            - Random Forest : classification supervisée.
+            - Isolation Forest : détection d'anomalies.
+        """
+
+        if len(data) == 0:
+            return np.empty(0, dtype=float)
+
+        probabilities = rf.predict_proba(data)
+
+        supervised = np.zeros(len(data), dtype=float)
+
+        if suspect_index is not None:
+            supervised += (
+                probabilities[:, suspect_index] * 0.5
+            )
+
+        if high_risk_index is not None:
+            supervised += probabilities[:, high_risk_index]
+
+        raw_anomaly = -iso.score_samples(data)
+
+        if iso_hi <= iso_lo:
+            anomaly = np.zeros(len(data), dtype=float)
+        else:
+            anomaly = np.clip(
+                (raw_anomaly - iso_lo) / (iso_hi - iso_lo),
+                0,
+                1
+            )
+
+        score = W_SUP * supervised + W_ISO * anomaly
+
+        return np.clip(score, 0, 1)
+
+    # ---------------------------------------------------------
+    # 7. Conversion des scores en niveaux
+    # ---------------------------------------------------------
+
+    def levels(scores, thresholds):
+        return np.asarray([
+            level_from_score(
+                score,
+                {
+                    "suspect": thresholds[0],
+                    "haut_risque": thresholds[1]
+                }
+            )
+            for score in scores
+        ])
+
+    # ---------------------------------------------------------
+    # 8. Calcul des scores sur validation et test
+    # ---------------------------------------------------------
+
     parts = {}
-    for name, mask in (("val", val), ("test", test)):
-        x, y = feats[mask], labels[mask].to_numpy()
-        ml = ml_score(x)
-        rs, crit = _rules_arrays(x)
-        final = np.array([combine(m, r, c) for m, r, c in zip(ml, rs, crit)])
-        parts[name] = {"x": x, "y": y, "ml": ml, "rs": rs, "final": final}
 
-    # --- 4. Calibrage des seuils sur la VALIDATION (jamais sur le test) ---
-    # On garde le couple qui donne la meilleure moyenne des F1 (suspect, haut risque).
-    best, best_value = CANDIDATE_THRESHOLDS[0], -1
-    for th in CANDIDATE_THRESHOLDS:
-        m = _metrics(parts["val"]["y"], levels(parts["val"]["final"], th))["par_classe"]
-        value = (m["suspect"]["f1"] + m["haut_risque"]["f1"]) / 2
-        if value > best_value:
-            best, best_value = th, value
-    thresholds = {"suspect": best[0], "haut_risque": best[1]}
+    for name, data, real_labels in (
+        ("val", x_val, y_val),
+        ("test", x_test, y_test)
+    ):
 
-    # --- 5. Métriques à enregistrer (affichées plus tard dans l'application) ---
-    metrics = {
-        "decoupage": {"train": int(train.sum()), "validation": int(val.sum()), "test": int(test.sum()),
-                      "debut": str(start.date()), "fin_train_jours": train_days,
-                      "fin_validation_jours": train_days + val_days},
-        "seuils": thresholds,
-        "poids": {"ml": 0.6, "regles": 0.4},
-        "importance_variables": dict(sorted(zip(FEATURE_COLUMNS, map(float, rf.feature_importances_)),
-                                            key=lambda kv: -kv[1])),
-        "avertissement": "Jeu de données synthétique : ces scores ne préjugent pas des performances sur des données réelles.",
-    }
-    for name in ("val", "test"):
-        p = parts[name]
-        metrics[name] = {
-            "regles_seules": _metrics(p["y"], levels(p["rs"], best)),
-            "modele_seul": _metrics(p["y"], levels(p["ml"], best)),
-            "hybride": _metrics(p["y"], levels(p["final"], best)),
+        ml = ml_score(data)
+
+        rule_scores, critical = _rules_arrays(data)
+
+        final_scores = np.asarray([
+            combine(m, r, c)
+            for m, r, c in zip(ml, rule_scores, critical)
+        ])
+
+        parts[name] = {
+            "y": real_labels,
+            "ml": ml,
+            "rs": rule_scores,
+            "final": final_scores
         }
-    # Ce qui est sauvegardé sur le disque : les deux modèles et leurs réglages.
-    artifact = {"rf": rf, "iso": iso, "iso_lo": iso_lo, "iso_hi": iso_hi, "thresholds": thresholds,
-                "features": FEATURE_COLUMNS}
-    # Conversion des nombres numpy en nombres Python pour pouvoir les stocker en JSON.
-    metrics = json.loads(json.dumps(metrics, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+
+    # ---------------------------------------------------------
+    # 9. Calibrage des seuils sur la validation uniquement
+    # ---------------------------------------------------------
+
+    best_thresholds = CANDIDATE_THRESHOLDS[0]
+    best_value = -1.0
+
+    for thresholds_candidate in CANDIDATE_THRESHOLDS:
+
+        predictions = levels(
+            parts["val"]["final"],
+            thresholds_candidate
+        )
+
+        result = _metrics(
+            parts["val"]["y"],
+            predictions
+        )
+
+        class_metrics = result["par_classe"]
+
+        value = (
+            class_metrics["suspect"]["f1"]
+            + class_metrics["haut_risque"]["f1"]
+        ) / 2
+
+        if value > best_value:
+            best_value = value
+            best_thresholds = thresholds_candidate
+
+    thresholds = {
+        "suspect": float(best_thresholds[0]),
+        "haut_risque": float(best_thresholds[1])
+    }
+
+    # ---------------------------------------------------------
+    # 10. Construction des métriques
+    # ---------------------------------------------------------
+
+    metrics = {
+        "decoupage": {
+            "train": int(len(x_tr)),
+            "validation": int(len(x_val)),
+            "test": int(len(x_test)),
+            "debut": str(start.date()),
+            "fin_train_jours": int(train_days),
+            "fin_validation_jours": int(train_days + val_days)
+        },
+
+        "repartition_train": {
+            level: int(np.sum(y_tr == level))
+            for level in LEVELS
+        },
+
+        "seuils": thresholds,
+
+        "poids": {
+            "ml": float(W_SUP + W_ISO),
+            "supervise": float(W_SUP),
+            "anomalie": float(W_ISO),
+            "regles": 0.4
+        },
+
+        "importance_variables": dict(
+            sorted(
+                zip(
+                    FEATURE_COLUMNS,
+                    map(float, rf.feature_importances_)
+                ),
+                key=lambda item: -item[1]
+            )
+        ),
+
+        "avertissement": (
+            "Jeu de données synthétique : les performances "
+            "ne préjugent pas des résultats sur des données réelles."
+        )
+    }
+
+    # Évaluation des deux ensembles.
+    for name in ("val", "test"):
+
+        data = parts[name]
+
+        metrics[name] = {
+            "regles_seules": _metrics(
+                data["y"],
+                levels(data["rs"], best_thresholds)
+            ),
+
+            "modele_seul": _metrics(
+                data["y"],
+                levels(data["ml"], best_thresholds)
+            ),
+
+            "hybride": _metrics(
+                data["y"],
+                levels(data["final"], best_thresholds)
+            )
+        }
+
+    # ---------------------------------------------------------
+    # 11. Construction de l'artefact du modèle
+    # ---------------------------------------------------------
+
+    artifact = {
+        "rf": rf,
+        "iso": iso,
+        "iso_lo": iso_lo,
+        "iso_hi": iso_hi,
+        "thresholds": thresholds,
+        "features": FEATURE_COLUMNS
+    }
+
+    # Conversion en types Python compatibles avec JSON.
+    metrics = json.loads(
+        json.dumps(
+            metrics,
+            default=lambda value: (
+                value.item()
+                if hasattr(value, "item")
+                else str(value)
+            )
+        )
+    )
+
     return artifact, metrics
+
