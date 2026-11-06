@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Download } from "lucide-react";
 import api, { download, errorMessage } from "../api/client";
@@ -35,14 +35,19 @@ export default function Alerts() {
   const { data, loading, error, reload } = useApi("/alerts/", {
     ...tab.params, ...filters, page: q.page, ordering: q.ordering || "-created_at",
   });
+  // Les compteurs de tous les onglets sont calculés sur les mêmes filtres, jamais sur l'onglet actif.
   const counts = useApi("/alerts/counts/", filters);
+  useEffect(() => {
+    const id = setInterval(counts.reload, 15000);
+    return () => clearInterval(id);
+  }, [counts.reload]);
   const [selected, setSelected] = useState([]);
   const [bulkStatus, setBulkStatus] = useState("TRAITEE");
   const [busy, setBusy] = useState(false);
 
   const c = counts.data?.by_status || {};
-  const tabCount = (t) => t.key === "open" ? (c.NOUVELLE || 0) + (c.EN_COURS || 0)
-    : t.key === "all" ? Object.values(c).reduce((a, b) => a + b, 0) : c[t.key] || 0;
+  const tabCount = (t) => t.key === "open" ? (Number(c.NOUVELLE) || 0) + (Number(c.EN_COURS) || 0)
+    : t.key === "all" ? Object.values(c).reduce((a, b) => a + Number(b || 0), 0) : Number(c[t.key]) || 0;
 
   const rows = data?.results || [];
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));

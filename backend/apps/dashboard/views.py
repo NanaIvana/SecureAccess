@@ -14,16 +14,17 @@ RÔLE
 from datetime import timedelta
 
 from django.db.models import Count, Max, Q
-from django.db.models.functions import TruncDate
+from django.db.models.functions import ExtractHour, TruncDate
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.models import User
 from apps.accounts.permissions import IsAdminOrResponsable
 from apps.alerts.models import Alert, AlertStatus, Severity
-from apps.detection.models import RiskEvaluation, RiskLevel
+from apps.detection.models import MLModel, RiskEvaluation, RiskLevel
 from apps.events.models import LoginEvent
 
 DAYS_PARAM = OpenApiParameter("days", int, description="Longueur de la période en jours (défaut 30)")
@@ -55,6 +56,160 @@ def _window_stats(start, end):
     total = ev["total"]
     return {"connexions": total, "taux_echec": round(ev["failed"] / total * 100, 2) if total else 0.0,
             "alertes": al["total"], "alertes_critiques": al["critical"]}
+
+
+def _dashboard_stats(start, end):
+    events = LoginEvent.objects.filter(timestamp__gt=start, timestamp__lte=end)
+    stats = events.aggregate(
+        total=Count("id"),
+        failures=Count("id", filter=Q(success=False)),
+        suspect=Count("id", filter=Q(evaluation__level=RiskLevel.SUSPECT)),
+        high_risk=Count("id", filter=Q(evaluation__level=RiskLevel.HAUT_RISQUE)),
+    )
+    stats["critical"] = Alert.objects.filter(
+        severity=Severity.CRITIQUE,
+        evaluation__event__timestamp__gt=start,
+        evaluation__event__timestamp__lte=end,
+    ).count()
+    risky_total = stats["suspect"] + stats["high_risk"]
+    stats["high_risk"] = max(0, stats["high_risk"] - stats["critical"])
+    stats["risky_rate"] = risky_total / stats["total"] if stats["total"] else 0
+    return stats
+
+
+class SummaryView(APIView):
+    """Résumé agrégé utilisé par la page principale de la console."""
+    permission_classes = [IsAdminOrResponsable]
+
+    @extend_schema(parameters=[DAYS_PARAM], responses=OpenApiTypes.OBJECT)
+    def get(self, request):
+        start, end, prev_start, days = get_period(request)
+        current = _dashboard_stats(start, end)
+        previous = _dashboard_stats(prev_start, start)
+
+        open_alerts = Alert.objects.filter(status__in=[AlertStatus.NOUVELLE, AlertStatus.EN_COURS])
+        open_counts = open_alerts.aggregate(
+            total=Count("id"),
+            critical=Count("id", filter=Q(severity=Severity.CRITIQUE)),
+        )
+
+        timeline_rows = (
+            LoginEvent.objects.filter(timestamp__gt=start, timestamp__lte=end)
+            .annotate(day=TruncDate("timestamp"))
+            .values("day")
+            .annotate(
+                total=Count("id"),
+                suspect=Count("id", filter=Q(evaluation__level=RiskLevel.SUSPECT)),
+                high_risk=Count("id", filter=Q(evaluation__level=RiskLevel.HAUT_RISQUE)),
+                critical=Count("id", filter=Q(evaluation__alert__severity=Severity.CRITIQUE)),
+            )
+            .order_by("day")
+        )
+        timeline = [
+            {"day": row["day"], "total": row["total"], "suspect": row["suspect"],
+             "high_risk": row["high_risk"] - row["critical"], "critical": row["critical"]}
+            for row in timeline_rows
+        ]
+
+        hours_rows = (
+            LoginEvent.objects.filter(timestamp__gt=start, timestamp__lte=end)
+            .annotate(hour=ExtractHour("timestamp"))
+            .values("hour")
+            .annotate(
+                total=Count("id"),
+                risky=Count("id", filter=Q(
+                    evaluation__level__in=[RiskLevel.SUSPECT, RiskLevel.HAUT_RISQUE]
+                )),
+            )
+        )
+        hours_by_number = {row["hour"]: row for row in hours_rows}
+        hours = [
+            {"hour": hour, "total": hours_by_number.get(hour, {}).get("total", 0),
+             "risky": hours_by_number.get(hour, {}).get("risky", 0)}
+            for hour in range(24)
+        ]
+
+        risky_evaluations = RiskEvaluation.objects.filter(
+            event__timestamp__gt=start,
+            event__timestamp__lte=end,
+            level__in=[RiskLevel.SUSPECT, RiskLevel.HAUT_RISQUE],
+        )
+        rule_counts = {}
+        for triggered_rules in risky_evaluations.values_list("triggered_rules", flat=True):
+            for code in triggered_rules or []:
+                rule_counts[code] = rule_counts.get(code, 0) + 1
+        rules = [
+            {"code": code, "count": count}
+            for code, count in sorted(rule_counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        countries = [
+            {"country": row["event__country"] or "?", "n": row["count"]}
+            for row in risky_evaluations.values("event__country")
+            .annotate(count=Count("id"))
+            .order_by("-count")[:10]
+        ]
+
+        latest_alerts = [
+            {
+                "id": alert.id,
+                "severity": alert.severity,
+                "created_at": alert.created_at,
+                "user": alert.evaluation.event.user.email,
+                "city": alert.evaluation.event.city,
+                "country": alert.evaluation.event.country,
+                "reasons": alert.evaluation.reasons or [],
+                "score": alert.evaluation.score,
+            }
+            for alert in open_alerts.select_related(
+                "evaluation__event__user"
+            ).order_by("-created_at")[:8]
+        ]
+        top_users = [
+            {
+                "id": row["event__user_id"],
+                "email": row["event__user__email"],
+                "full_name": row["event__user__full_name"],
+                "risky": row["count"],
+                "max_score": row["max_score"],
+            }
+            for row in risky_evaluations.values(
+                "event__user_id", "event__user__email", "event__user__full_name"
+            )
+            .annotate(count=Count("id"), max_score=Max("score"))
+            .order_by("-count", "-max_score")[:10]
+        ]
+
+        model = MLModel.objects.filter(is_active=True).first()
+        model_data = None
+        if model:
+            metrics = model.metrics.get("test", {}).get("modele_seul", {})
+            classes = metrics.get("par_classe", {})
+            class_f1 = [value.get("f1", 0) for value in classes.values()]
+            matrix = metrics.get("matrice_confusion", [])
+            normal_count = sum(matrix[0]) if matrix else 0
+            false_positives = sum(matrix[0][1:]) if matrix else 0
+            model_data = {
+                "version": model.version,
+                "trained_at": model.trained_at,
+                "f1": sum(class_f1) / len(class_f1) if class_f1 else 0,
+                "recall": metrics.get("alertes", {}).get("rappel", 0),
+                "fpr": false_positives / normal_count if normal_count else 0,
+            }
+
+        return Response({
+            "period": {"start": start, "end": end, "days": days},
+            "kpis": current,
+            "previous": previous,
+            "alerts": {"open": open_counts["total"], "open_critical": open_counts["critical"]},
+            "blocked_users": User.objects.filter(blocked_until__gt=timezone.now()).count(),
+            "timeline": timeline,
+            "hours": hours,
+            "rules": rules,
+            "countries": countries,
+            "latest_alerts": latest_alerts,
+            "top_users": top_users,
+            "model": model_data,
+        })
 
 
 class KpisView(APIView):

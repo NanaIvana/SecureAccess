@@ -29,10 +29,14 @@ from apps.detection import dataio
 from apps.detection.engine import Detector
 from apps.detection.features import build_features
 from apps.detection.models import MLModel, RiskEvaluation, RiskLevel
+from apps.detection.service import build_scoring_policy
 from apps.events.models import LoginEvent
 
 # Correspondance entre les niveaux du moteur (minuscules) et ceux de la base (majuscules).
-LEVEL_MAP = {"normal": RiskLevel.NORMAL, "suspect": RiskLevel.SUSPECT, "haut_risque": RiskLevel.HAUT_RISQUE}
+LEVEL_MAP = {
+    "normal": RiskLevel.NORMAL, "suspect": RiskLevel.SUSPECT,
+    "haut_risque": RiskLevel.HAUT_RISQUE, "critique": RiskLevel.CRITIQUE,
+}
 
 
 class Command(BaseCommand):
@@ -64,7 +68,8 @@ class Command(BaseCommand):
         self.stdout.write(f"Calcul des features sur {len(events)} événements...")
         feats = build_features(events, users)
         self.stdout.write("Évaluation du risque...")
-        results = detector.evaluate(feats)
+        config, rules, scoring_feats = build_scoring_policy(feats)
+        results = detector.evaluate(scoring_feats, config, rules)
 
         # 4. On ne garde que les événements qui n'ont pas encore d'évaluation.
         existing = set(RiskEvaluation.objects.values_list("event_id", flat=True))
@@ -94,7 +99,9 @@ class Command(BaseCommand):
                 old = ts_map[ev.event_id] < cutoff  # alerte ancienne : clôturée automatiquement
                 alerts.append(Alert(
                     evaluation=ev,
-                    severity=Severity.CRITIQUE if ev.level == RiskLevel.HAUT_RISQUE else Severity.MOYENNE,
+                    severity=Severity.CRITIQUE if ev.level in (
+                        RiskLevel.HAUT_RISQUE, RiskLevel.CRITIQUE,
+                    ) else Severity.MOYENNE,
                     status=AlertStatus.TRAITEE if old else AlertStatus.NOUVELLE,
                     created_at=created,
                     handled_at=(created + timedelta(hours=1)) if old else None,

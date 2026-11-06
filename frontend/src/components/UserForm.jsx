@@ -1,6 +1,6 @@
 import { useState } from "react";
 import api, { errorMessage } from "../api/client";
-import { ROLES, WORK_PROFILES } from "../lib/labels";
+import { PROFILE_TYPES, ROLES, WORK_PROFILES } from "../lib/labels";
 import { ErrorBox, Field, Modal } from "./ui";
 
 /** Création ou modification d'un utilisateur (administrateur). */
@@ -9,7 +9,7 @@ export default function UserForm({ user, onClose, onSaved }) {
   const [f, setF] = useState({
     email: user?.email || "", full_name: user?.full_name || "", role: user?.role || "UTILISATEUR",
     is_active: user?.is_active ?? true, home_city: user?.home_city || "", home_country: user?.home_country || "Cameroun",
-    home_lat: user?.home_lat ?? "", home_lon: user?.home_lon ?? "", work_profile: user?.work_profile || "JOURNEE", password: "",
+    home_lat: user?.home_lat ?? "", home_lon: user?.home_lon ?? "", work_profile: user?.work_profile || "JOURNEE", profile_type: user?.profile_type || "PERSONNEL", password: "",
     two_factor_required: user?.two_factor?.required ?? false,
   });
   const [error, setError] = useState("");
@@ -42,6 +42,11 @@ export default function UserForm({ user, onClose, onSaved }) {
         <Field label="Rôle">
           <select className="input" value={f.role} onChange={set("role")}>
             {Object.entries(ROLES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </Field>
+        <Field label="Profil dans l'établissement">
+          <select className="input" value={f.profile_type} onChange={set("profile_type")}>
+            {Object.entries(PROFILE_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </Field>
         <Field label="Profil horaire">

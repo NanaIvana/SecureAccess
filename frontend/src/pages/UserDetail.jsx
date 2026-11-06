@@ -73,7 +73,7 @@ export default function UserDetail() {
       <PageHead
         back={back}
         title={u.full_name || u.email}
-        sub={<>{u.email} – {u.role_label}{u.home_city ? `, réside à ${u.home_city}` : ""}</>}
+        sub={<>{u.email} – {u.role_label}{u.profile_type_label ? ` · ${u.profile_type_label}` : ""}{u.home_city ? `, réside à ${u.home_city}` : ""}</>}
         actions={isAdmin && (
           <>
             <button className="btn" onClick={() => setEditing(true)}><Pencil size={15} /> Modifier</button>
@@ -140,7 +140,8 @@ export default function UserDetail() {
         <div className="stack">
           <Panel title="Profil">
             <dl className="facts">
-              <dt>Rôle</dt><dd>{u.role_label}</dd>
+              <dt>Rôle sécurité</dt><dd>{u.role_label}</dd>
+              <dt>Profil établissement</dt><dd>{u.profile_type_label || "–"}</dd>
               <dt>État</dt><dd>{u.is_blocked ? <Badge tone="danger">Bloqué</Badge> : u.is_active ? <Badge tone="ok">Actif</Badge> : <Badge>Désactivé</Badge>}</dd>
               <dt>Résidence</dt><dd>{[u.home_city, u.home_country].filter(Boolean).join(", ") || "–"}</dd>
               <dt>Profil horaire</dt><dd>{WORK_PROFILES[u.work_profile]}</dd>

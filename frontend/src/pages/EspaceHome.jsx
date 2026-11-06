@@ -1,9 +1,9 @@
 // « Ma sécurité » : état du compte, connexions récentes et conseils (GET /api/me/security/).
-import { AlertTriangle, CheckCircle2, KeyRound, LogIn, MonitorSmartphone, ShieldAlert, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, KeyRound, LogIn, MonitorSmartphone, ShieldAlert, XCircle, FlaskConical } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import api from "../api/client";
-import { Badge, ErrorBox, Loader, Panel } from "../components/ui";
+import api, { errorMessage } from "../api/client";
+import { Badge, ErrorBox, Field, Loader, Panel } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { fmtDate, relative } from "../lib/format";
 
@@ -20,6 +20,25 @@ export default function EspaceHome() {
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [labPassword, setLabPassword] = useState("");
+  const [labResult, setLabResult] = useState(null);
+  const [labError, setLabError] = useState("");
+  const [labBusy, setLabBusy] = useState(false);
+
+  const runLab = async (scenario) => {
+    setLabBusy(true);
+    setLabError("");
+    setLabResult(null);
+    try {
+      const { data: result } = await api.post("/lab/attacks/", { scenario, password: labPassword });
+      setLabResult(result);
+    } catch (e) {
+      setLabError(errorMessage(e));
+    } finally {
+      setLabBusy(false);
+      load();
+    }
+  };
 
   const load = useCallback(() => {
     setError(null);
@@ -50,6 +69,28 @@ export default function EspaceHome() {
           <p>{st.text} Profil : {data.profile_type_label.toLowerCase()}.</p>
         </div>
       </div>
+
+      {import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === "true" && user?.email?.toLowerCase().endsWith(".test") && (
+        <Panel title="Mode test de sécurité" sub="Les scénarios ciblent uniquement votre compte de démonstration et passent par le vrai endpoint de connexion.">
+          <div className="filters">
+            <Field label="Mot de passe du compte" className="grow">
+              <input className="input" type="password" autoComplete="current-password" value={labPassword}
+                     onChange={(e) => setLabPassword(e.target.value)} placeholder="Requis sauf pour la force brute" />
+            </Field>
+            <button className="btn" disabled={labBusy || !labPassword} onClick={() => runLab("normal")}><LogIn size={15} /> Connexion normale</button>
+            <button className="btn" disabled={labBusy || !labPassword} onClick={() => runLab("new_device")}><MonitorSmartphone size={15} /> Nouvel appareil</button>
+            <button className="btn" disabled={labBusy || !labPassword} onClick={() => runLab("compromised")}><ShieldAlert size={15} /> Compte compromis</button>
+            <button className="btn danger" disabled={labBusy} onClick={() => runLab("brute_force")}><FlaskConical size={15} /> Force brute</button>
+          </div>
+          <p className="small muted">Le mode nécessite DEMO_MODE=True côté backend. La force brute effectue six échecs réels sur votre compte de test et peut verrouiller cette source pendant quelques minutes.</p>
+          {labError && <div className="notice danger small" style={{ marginTop: 10 }}>{labError}</div>}
+          {labResult && <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="data"><thead><tr><th>Essai</th><th>Décision HTTP</th><th>Niveau</th><th>Score</th><th>Motifs</th></tr></thead>
+              <tbody>{labResult.attempts.map((a) => <tr key={a.attempt}><td>{a.attempt}</td><td>{a.http_status} · {a.decision}</td><td>{a.level || "—"}</td><td>{a.score == null ? "—" : Math.round(a.score * 100)}</td><td>{(a.reasons || []).join(" · ") || "—"}</td></tr>)}</tbody>
+            </table>
+          </div>}
+        </Panel>
+      )}
 
       <div className="tiles">
         {tiles.map((t) => (

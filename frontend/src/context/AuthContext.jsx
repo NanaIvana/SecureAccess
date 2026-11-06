@@ -19,17 +19,23 @@ export function AuthProvider({ children }) {
   const isSupervisor = isAdmin || user?.role === "RESPONSABLE";
 
   const loadThresholds = useCallback(async (u) => {
-    if (!u || u.role === "UTILISATEUR") return;
+    if (!u || u.role !== "ADMIN") return;
     try {
-      const { data } = await api.get("/detection/config/");
-      setThresholds({ suspect: data.suspect_threshold, high: data.high_risk_threshold, critical: data.critical_threshold });
+      const { data } = await api.get("/ml/model/");
+      if (data.thresholds) {
+        setThresholds({
+          suspect: data.thresholds.suspect,
+          high: data.thresholds.haut_risque,
+          critical: DEFAULT_THRESHOLDS.critical,
+        });
+      }
     } catch { /* valeurs par défaut */ }
   }, []);
 
   useEffect(() => {
     setSessionExpiredHandler(() => { setEndReason("Votre session a expiré. Reconnectez-vous."); setUser(null); });
     if (!tokens.access && !tokens.refresh) { setReady(true); return; }
-    api.get("/auth/me/")
+    api.get("/me/")
       .then(({ data }) => { setUser(data); loadThresholds(data); })
       .catch(() => tokens.clear())
       .finally(() => setReady(true));
@@ -45,8 +51,10 @@ export function AuthProvider({ children }) {
   }, [loadThresholds]);
 
   /** Étape 1. Retourne soit la session ouverte, soit { two_factor } si une seconde étape est exigée. */
-  const login = useCallback(async (email, password) => {
-    const { data } = await api.post("/auth/login/", { email, password, device: deviceInfo() });
+  const login = useCallback(async (email, password, demoHeaders = {}, fingerprintOverride = null) => {
+    const device = deviceInfo();
+    if (fingerprintOverride) device.fingerprint = fingerprintOverride;
+    const { data } = await api.post("/auth/login/", { email, password, device }, { headers: demoHeaders });
     if (data.two_factor) return data;
     return finishLogin(data);
   }, [finishLogin]);

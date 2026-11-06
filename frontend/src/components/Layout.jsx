@@ -1,6 +1,6 @@
 // Coquille de l'application : barre latérale selon l'espace (client ou console) et le rôle.
 import {
-  Activity, Bell, BellRing, FileText, FlaskConical, Gauge, History, Lock, LogOut, Menu, ScrollText, ShieldCheck,
+  Activity, Bell, BellRing, FileText, Gauge, History, Lock, LogOut, Menu, ScrollText, ShieldCheck,
   SlidersHorizontal, UserRound, Users,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -49,7 +49,7 @@ export default function Layout({ space }) {
     if (!isAdmin) return undefined;
     let stop = false;
     const tick = () => api.get("/alerts/counts/", { params: { open: true } })
-      .then(({ data }) => !stop && setOpenAlerts((data.by_status.NOUVELLE || 0) + (data.by_status.EN_COURS || 0)))
+      .then(({ data }) => !stop && setOpenAlerts(Number(data.open ?? ((data.by_status.NOUVELLE || 0) + (data.by_status.EN_COURS || 0)))))
       .catch(() => {});
     tick();
     const id = setInterval(tick, 30000);
@@ -94,7 +94,6 @@ export default function Layout({ space }) {
                 <>
                   <div className="nav-group">Détection</div>
                   <Item to="/console/detection" icon={SlidersHorizontal} color="c-amber">Règles et modèle</Item>
-                  <Item to="/console/simulateur" icon={FlaskConical} color="c-pink">Simulateur</Item>
                 </>
               )}
               <div className="nav-group">Conformité</div>

@@ -35,7 +35,12 @@ class Command(BaseCommand):
         if opts["no_load"]:
             return
 
-        existing = User.objects.filter(email__endswith="@" + datagen.DATASET_DOMAIN)
+        protected_demo_accounts = [
+            "enseignant@demo.secureaccess.test",
+            "secretaire@demo.secureaccess.test",
+            "administration@demo.secureaccess.test",
+        ]
+        existing = User.objects.filter(email__endswith="@" + datagen.DATASET_DOMAIN).exclude(email__in=protected_demo_accounts)
         if existing.exists():
             if not opts["reset"]:
                 raise CommandError("Des données synthétiques existent déjà. Relancez avec --reset pour les remplacer.")
@@ -50,7 +55,7 @@ class Command(BaseCommand):
             users = [
                 User(email=u["email"], full_name=u["full_name"], role=u["role"], password=password_hash,
                      home_city=u["home_city"], home_country=u["home_country"], home_lat=u["home_lat"],
-                     home_lon=u["home_lon"], work_profile=u["work_profile"])
+                     home_lon=u["home_lon"], work_profile=u["work_profile"], profile_type=u["profile_type"])
                 for u in data["users"]
             ]
             User.objects.bulk_create(users, batch_size=1000)
@@ -79,7 +84,7 @@ class Command(BaseCommand):
 
             if not User.objects.filter(email=RESPONSABLE_EMAIL).exists():
                 User.objects.create_user(RESPONSABLE_EMAIL, password=DEMO_PASSWORD, role="RESPONSABLE",
-                                         full_name="Responsable Démo")
+                                         full_name="Responsable Démo", profile_type="ADMINISTRATION")
 
         total = LoginEvent.objects.count()
         self.stdout.write(self.style.SUCCESS(f"{User.objects.count()} comptes, {Device.objects.count()} appareils, {total} événements."))

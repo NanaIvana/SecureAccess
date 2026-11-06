@@ -12,9 +12,11 @@ import hashlib
 import hmac
 import random
 import secrets
+import csv
 from datetime import timedelta
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
@@ -29,7 +31,7 @@ from apps.detection.service import NoActiveModel, evaluate_events
 
 from .datagen import CAMEROON_CITIES, FOREIGN_CITIES
 from .filters import LoginEventFilter
-from .models import Device, LoginEvent
+from .models import Device, LoginEvent, Notification
 from .serializers import LoginEventSerializer, SimulateSerializer
 
 # Lieux proposés au simulateur : {nom de la ville: (pays, latitude, longitude)}
@@ -43,12 +45,68 @@ def _hash_ip(label):
 
 
 class EventViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = LoginEvent.objects.select_related("user", "device", "evaluation")
+    queryset = LoginEvent.objects.select_related("user", "device", "evaluation", "evaluation__alert")
     serializer_class = LoginEventSerializer
     permission_classes = [IsAdminRole]
     filterset_class = LoginEventFilter
     search_fields = ["user__email"]
     ordering_fields = ["timestamp"]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "report", "confirm"):
+            return [IsAdminRoleOrOwner()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.role != "ADMIN":
+            queryset = queryset.filter(user=self.request.user)
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def report(self, request, pk=None):
+        event = self.get_object()
+        if event.user_id != request.user.id:
+            return Response({"detail": "Seul le propriétaire peut signaler cette connexion."},
+                            status=status.HTTP_403_FORBIDDEN)
+        comment = str(request.data.get("comment", "")).strip()[:1000]
+        admins = list(User.objects.filter(role="ADMIN", is_active=True))
+        if not admins:
+            return Response({"detail": "Aucun administrateur actif ne peut recevoir ce signalement."},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        for admin in admins:
+            Notification.objects.get_or_create(
+                user=admin,
+                event=event,
+                kind=Notification.Kind.CONNEXION_INHABITUELLE,
+                title="Connexion signalée par un utilisateur",
+                defaults={
+                    "message": f"{request.user.email} signale cette connexion comme inconnue."
+                               + (f" Motif : {comment}" if comment else ""),
+                },
+            )
+        log_action(request.user, "SIGNALER_CONNEXION", str(event.id), {"comment": comment})
+        return Response({"detail": "La connexion a été signalée à l'équipe de sécurité."},
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        event = self.get_object()
+        if event.user_id != request.user.id:
+            return Response({"detail": "Seul le propriétaire peut confirmer cette connexion."},
+                            status=status.HTTP_403_FORBIDDEN)
+        notification = Notification.objects.filter(
+            user=request.user, event=event, needs_response=True, response=""
+        ).first()
+        if notification is None:
+            return Response({"detail": "Aucune confirmation n'est attendue pour cette connexion."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        notification.response = Notification.Response.CONFIRMEE
+        notification.response_at = timezone.now()
+        notification.read_at = notification.read_at or notification.response_at
+        notification.save(update_fields=["response", "response_at", "read_at"])
+        log_action(request.user, "CONFIRMER_CONNEXION", str(event.id))
+        return Response({"detail": "Connexion confirmée."})
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
     @action(detail=False, methods=["get"])
@@ -57,6 +115,39 @@ class EventViewSet(viewsets.ReadOnlyModelViewSet):
         out = [{"city": "domicile", "country": "Ville d'attache du compte"}]
         out += [{"city": c, "country": v[0]} for c, v in PLACES.items()]
         return Response(out)
+
+    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @action(detail=False, methods=["get"])
+    def countries(self, request):
+        """Pays présents dans l'historique des connexions."""
+        countries = (LoginEvent.objects.exclude(country="")
+                     .order_by("country").values_list("country", flat=True).distinct())
+        return Response(list(countries))
+
+    @action(detail=False, methods=["get"])
+    def export(self, request):
+        if request.user.role != "ADMIN":
+            return Response({"detail": "Accès réservé aux administrateurs."}, status=status.HTTP_403_FORBIDDEN)
+        rows = self.filter_queryset(self.get_queryset()).select_related("user", "evaluation")
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="connexions.csv"'
+        response.write("\ufeff")
+        writer = csv.writer(response)
+        writer.writerow(["Date", "Compte", "Pays", "Ville", "Réussie", "Score", "Niveau", "Règles"])
+        for event in rows.iterator():
+            evaluation = getattr(event, "evaluation", None)
+            account = event.user.email
+            if request.query_params.get("mode") == "analyse":
+                account = hmac.new(
+                    settings.IP_HASH_SECRET.encode(), str(event.user_id).encode(), hashlib.sha256
+                ).hexdigest()[:16]
+            writer.writerow([
+                event.timestamp.isoformat(), account, event.country, event.city, event.success,
+                evaluation.score if evaluation else "",
+                evaluation.level if evaluation else "",
+                ", ".join(evaluation.triggered_rules) if evaluation else "",
+            ])
+        return response
 
     @extend_schema(request=SimulateSerializer, responses=OpenApiTypes.OBJECT)
     @action(detail=False, methods=["post"])
@@ -123,3 +214,15 @@ class EventViewSet(viewsets.ReadOnlyModelViewSet):
             "alert": {"id": alert.id, "severity": alert.severity, "status": alert.status} if alert else None,
             "failures_created": d["failures"],
         }, status=status.HTTP_201_CREATED)
+
+
+class IsAdminRoleOrOwner(IsAdminRole):
+    """Les utilisateurs accèdent à leurs propres événements, les admins à tous."""
+
+    def has_object_permission(self, request, view, obj):
+        return bool(request.user.is_authenticated and (
+            request.user.role == "ADMIN" or obj.user_id == request.user.id
+        ))
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)

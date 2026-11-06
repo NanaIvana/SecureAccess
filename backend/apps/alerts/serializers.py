@@ -7,10 +7,22 @@ RÔLE
 """
 from rest_framework import serializers
 
+from apps.accounts.models import User
 from apps.events.models import LoginEvent
-from apps.events.serializers import LoginEventSerializer
+from apps.events.serializers import EvaluationSerializer, LoginEventSerializer
 
 from .models import Alert
+
+
+class AlertUserSerializer(serializers.ModelSerializer):
+    is_blocked = serializers.SerializerMethodField()
+
+    def get_is_blocked(self, obj):
+        return obj.is_blocked()
+
+    class Meta:
+        model = User
+        fields = ["id", "email", "full_name", "is_blocked", "blocked_until"]
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -23,24 +35,29 @@ class AlertSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source="evaluation.event.user.email", read_only=True)
     country = serializers.CharField(source="evaluation.event.country", read_only=True)
     city = serializers.CharField(source="evaluation.event.city", read_only=True)
+    location_source = serializers.CharField(source="evaluation.event.location_source", read_only=True)
     success = serializers.BooleanField(source="evaluation.event.success", read_only=True)
     handled_by_email = serializers.CharField(source="handled_by.email", read_only=True, default=None, allow_null=True)
+    user = AlertUserSerializer(source="evaluation.event.user", read_only=True)
+    event_timestamp = serializers.DateTimeField(source="evaluation.event.timestamp", read_only=True)
+    triggered_rules = serializers.JSONField(source="evaluation.triggered_rules", read_only=True)
+    handled_by = AlertUserSerializer(read_only=True)
 
     class Meta:
         model = Alert
         fields = ["id", "severity", "status", "created_at", "handled_at", "handled_by_email", "comment",
                   "level", "score", "reasons", "event_id", "timestamp", "user_id", "user_email",
-                  "country", "city", "success"]
+                  "country", "city", "location_source", "success", "user", "event_timestamp", "triggered_rules", "handled_by"]
         read_only_fields = fields
 
 
 class AlertDetailSerializer(AlertSerializer):
     event = LoginEventSerializer(source="evaluation.event", read_only=True)
-    triggered_rules = serializers.JSONField(source="evaluation.triggered_rules", read_only=True)
+    evaluation = EvaluationSerializer(read_only=True)
     recent_events = serializers.SerializerMethodField()
 
     class Meta(AlertSerializer.Meta):
-        fields = AlertSerializer.Meta.fields + ["event", "triggered_rules", "recent_events"]
+        fields = AlertSerializer.Meta.fields + ["event", "evaluation", "recent_events"]
         read_only_fields = fields
 
     def get_recent_events(self, obj) -> list:

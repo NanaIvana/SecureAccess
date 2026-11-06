@@ -71,23 +71,51 @@ class Detector:
         supervised = proba[:, self.classes.index("suspect")] * 0.5 + proba[:, self.classes.index("haut_risque")]
         # Isolation Forest : plus la tentative est atypique, plus le score est grand.
         raw = -self.iso.score_samples(x)
-        anomaly = np.clip((raw - self.iso_lo) / (self.iso_hi - self.iso_lo), 0, 1)
+        anomaly = (
+            np.clip((raw - self.iso_lo) / (self.iso_hi - self.iso_lo), 0, 1)
+            if self.iso_hi > self.iso_lo else np.zeros(len(raw))
+        )
         return W_SUP * supervised + W_ISO * anomaly
 
-    def evaluate(self, feats):
+    def evaluate(self, feats, config=None, rule_settings=None):
         """Évalue chaque ligne de features (DataFrame indexé par event_id).
         Retourne une liste de dictionnaires : score, niveau, règles et motifs."""
         ml = self.ml_scores(feats)
         out = []
+        configured = config is not None
+        ml_points = config["ml_points"] if configured else 60
+        thresholds = {
+            "suspect": config["suspect_threshold"] if configured else self.thresholds["suspect"],
+            "haut_risque": config["high_risk_threshold"] if configured else self.thresholds["haut_risque"],
+        }
         for (event_id, row), ml_score in zip(feats.iterrows(), ml):
-            rules_score, triggered, reasons, critical = apply_rules(row)
-            score = combine(ml_score, rules_score, critical)
+            rules_score, triggered, reasons, critical = apply_rules(row, rule_settings)
+            score_thresholds = thresholds
+            if configured and row.get("is_sensitive", False):
+                offset = config["sensitive_offset"]
+                score_thresholds = {
+                    key: max(0.0, value - offset) for key, value in thresholds.items()
+                }
+            if configured:
+                score = min(ml_score * ml_points / 100 + rules_score, 1.0)
+                if critical:
+                    score = max(score, RULES_FLOOR)
+            else:
+                score = combine(ml_score, rules_score, critical)
             # Si aucune règle ne s'applique mais que le modèle trouve la tentative atypique,
             # on le dit clairement pour que l'administrateur ait un motif à lire.
             if ml_score >= 0.4 and not triggered:
                 reasons = [f"Le modèle de détection juge cette tentative atypique (score ML {ml_score:.2f})"]
+            level = level_from_score(score, score_thresholds)
+            critical_threshold = max(
+                0.0, config["critical_threshold"] - config["sensitive_offset"]
+            ) if configured and row.get("is_sensitive", False) else (
+                config["critical_threshold"] if configured else None
+            )
+            if configured and score >= critical_threshold:
+                level = "critique"
             out.append({
-                "event_id": int(event_id), "score": score, "level": level_from_score(score, self.thresholds),
+                "event_id": int(event_id), "score": score, "level": level,
                 "ml_score": float(ml_score), "rules_score": float(rules_score),
                 "triggered_rules": triggered, "reasons": reasons,
             })

@@ -2,7 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  Bar, BarChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, Pie, PieChart, Cell, Legend,
 } from "recharts";
 import { Empty, ErrorBox, Loader, PageHead, Panel, RiskMeter, SeverityBadge } from "../components/ui";
 import { useColors } from "../lib/colors";
@@ -10,7 +10,7 @@ import { fmtDate, fmtDay, fmtNum, fmtPct, relative } from "../lib/format";
 import { RULES } from "../lib/labels";
 import { useApi } from "../lib/useApi";
 
-const PERIODS = [7, 30, 90, 180];
+const PERIODS = [7, 30, 90, 120, 180];
 
 function Delta({ now, before, invert }) {
   if (!before) return <span className="kpi-sub">Pas de période précédente</span>;
@@ -51,11 +51,12 @@ export default function Dashboard() {
       sub={data ? `Du ${fmtDate(data.period.start)} au ${fmtDate(data.period.end)}, jusqu'au dernier événement enregistré.` : "Vue d'ensemble des connexions et des alertes."}
       actions={
         <>
-          <div className="tabs" style={{ margin: 0, border: 0 }} role="group" aria-label="Période">
-            {PERIODS.map((p) => (
-              <button key={p} className={days === p ? "on" : ""} onClick={() => setDays(p)}>{p} jours</button>
-            ))}
-          </div>
+          <label className="period-select">
+            <span>Période</span>
+            <select className="input" value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Période du tableau de bord">
+              {PERIODS.map((p) => <option key={p} value={p}>{p} {p === 1 ? "jour" : "jours"}</option>)}
+            </select>
+          </label>
           <button className="btn" onClick={reload} aria-label="Actualiser"><RefreshCw size={15} /></button>
         </>
       }
@@ -124,19 +125,36 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </Panel>
 
-          <Panel title="Répartition horaire" sub="Heure UTC de la tentative. Les attaques se concentrent la nuit.">
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={data.hours} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
-                <CartesianGrid stroke={c.line} vertical={false} />
-                <XAxis dataKey="hour" tickFormatter={(h) => `${h}h`} tick={{ fill: c.ink3, fontSize: 12 }} stroke={c.line} />
-                <YAxis tick={{ fill: c.ink3, fontSize: 12 }} stroke={c.line} />
-                <Tooltip contentStyle={tooltipStyle} labelFormatter={(h) => `${h} h – ${h + 1} h`}
-                         formatter={(v, n) => [fmtNum(v), n === "risky" ? "À risque" : "Toutes"]} />
-                <Bar dataKey="total" fill={c.line} />
-                <Bar dataKey="risky" fill={c.danger} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Panel>
+          <div className="grid grid-2">
+            <Panel title="Répartition horaire" sub="À quelles heures les tentatives se produisent-elles ? (UTC)">
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={data.hours} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+                  <CartesianGrid stroke={c.line} vertical={false} />
+                  <XAxis dataKey="hour" tickFormatter={(h) => `${h}h`} tick={{ fill: c.ink3, fontSize: 12 }} stroke={c.line} />
+                  <YAxis tick={{ fill: c.ink3, fontSize: 12 }} stroke={c.line} />
+                  <Tooltip contentStyle={tooltipStyle} labelFormatter={(h) => `${h} h – ${h + 1} h`}
+                           formatter={(v, n) => [fmtNum(v), n === "risky" ? "À risque" : "Toutes"]} />
+                  <Bar dataKey="total" fill={c.line} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="risky" fill={c.danger} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Panel>
+            <Panel title="Les tentatives aboutissent-elles ?" sub="Part des connexions réussies et des échecs sur la période.">
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={[
+                    { name: "Réussies", value: Math.max(0, k.total - k.failures) },
+                    { name: "Échecs", value: k.failures },
+                  ]} dataKey="value" nameKey="name" innerRadius={55} outerRadius={82} paddingAngle={3}
+                       label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                    <Cell fill={c.ok} /><Cell fill={c.danger} />
+                  </Pie>
+                  <Tooltip contentStyle={tooltipStyle} formatter={(v) => fmtNum(v)} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </Panel>
+          </div>
 
           <div className="grid grid-2">
             <Panel title="Règles déclenchées" sub="Sur les connexions suspectes et à haut risque">
@@ -189,19 +207,6 @@ export default function Dashboard() {
             </table>
           </Panel>
 
-          <Panel title="Modèle de détection actif">
-            {data.model ? (
-              <dl className="facts">
-                <dt>Version</dt><dd>{data.model.version}</dd>
-                <dt>Entraîné le</dt><dd>{fmtDate(data.model.trained_at)}</dd>
-                <dt>F1 (ML seul)</dt><dd>{fmtPct(data.model.f1)}</dd>
-                <dt>Attaques détectées</dt><dd>{fmtPct(data.model.recall)}</dd>
-                <dt>Faux positifs</dt><dd>{fmtPct(data.model.fpr)}</dd>
-              </dl>
-            ) : (
-              <p className="muted">Aucun modèle actif : le score repose uniquement sur les règles. <Link to="/console/detection?tab=modele">Entraîner un modèle</Link></p>
-            )}
-          </Panel>
         </div>
       </div>
     </div>

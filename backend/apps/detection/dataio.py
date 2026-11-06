@@ -20,7 +20,7 @@ from apps.accounts.models import User
 
 # Champs lus en base pour chaque événement (evaluation__level = niveau de risque déjà calculé, s'il existe).
 EVENT_FIELDS = ("id", "user_id", "timestamp", "ip_hash", "country", "latitude", "longitude",
-                "device_id", "success", "label", "evaluation__level")
+                "device_id", "success", "label", "user_agent", "evaluation__level")
 
 
 def events_frame(queryset):
@@ -31,6 +31,7 @@ def events_frame(queryset):
     df = df.rename(columns={"id": "event_id", "evaluation__level": "eval_level"})
     # Valeurs manquantes : appareil inconnu = -1, position inconnue = (0, 0).
     df["device_id"] = df["device_id"].fillna(-1)
+    df["user_agent"] = df["user_agent"].fillna("")
     df["latitude"] = df["latitude"].fillna(0.0)
     df["longitude"] = df["longitude"].fillna(0.0)
     # Jeu de données : on se fie à l'étiquette ; sinon au verdict déjà rendu par le détecteur.

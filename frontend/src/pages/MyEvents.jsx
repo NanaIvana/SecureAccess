@@ -13,7 +13,7 @@ export default function MyEvents() {
   const [sp, setSp] = useSearchParams();
   const page = sp.get("page") || 1;
   const { data, loading, error, reload } = useApi("/events/", { page, page_size: 25, user: user.id });
-  const risky = useApi("/events/", { user: user.id, level: "CRITIQUE", page_size: 1 });
+  const risky = useApi("/events/", { user: user.id, level: "HAUT_RISQUE,CRITIQUE", page_size: 1 });
   const pending = useApi("/notifications/unread/");
 
   return (
@@ -40,9 +40,11 @@ export default function MyEvents() {
       {risky.data?.count > 0 && (
         <div className="notice danger" style={{ marginBottom: 16 }}>
           <ShieldAlert size={18} />
-          <span>{fmtNum(risky.data.count)} connexion(s) critique(s) sur votre compte. Vérifiez-les et changez votre mot de passe si besoin.</span>
+          <span>{fmtNum(risky.data.count)} connexion(s) à risque élevé ou critique sur votre compte. Vérifiez-les et changez votre mot de passe si besoin.</span>
         </div>
       )}
+      <ErrorBox error={risky.error} onRetry={risky.reload} />
+      <ErrorBox error={pending.error} onRetry={pending.reload} />
       <Panel flush>
         <ErrorBox error={error} onRetry={reload} />
         {!data && loading ? <Loader /> : <EventTable events={data?.results} showUser={false} showRules={false} emptyText="Aucune connexion enregistrée." />}

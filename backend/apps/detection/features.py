@@ -75,7 +75,11 @@ def build_features(events, users):
 
     n = len(ev)
     # Un tableau de zéros par feature ; on le remplit événement par événement.
-    cols = {name: np.zeros(n, dtype=float) for name in FEATURE_COLUMNS}
+    auxiliary_columns = [
+        "failed_24h", "distinct_sources_user_24h", "distinct_users_from_ip_24h",
+        "automated_user_agent", "regular_rapid_cadence",
+    ]
+    cols = {name: np.zeros(n, dtype=float) for name in FEATURE_COLUMNS + auxiliary_columns}
 
     # --- Feature « distinct_users_from_ip_1h » ---
     # On parcourt tous les événements dans l'ordre du temps et, pour chaque adresse IP
@@ -85,12 +89,17 @@ def build_features(events, users):
     t_arr = ev["t"].to_numpy()
     ip_arr = ev["ip_hash"].to_numpy()
     uid_arr = ev["user_id"].to_numpy()
+    succ_arr = ev["success"].to_numpy(dtype=bool)
     for i in range(n):
+        if not ip_arr[i]:
+            continue
         dq = ip_windows[ip_arr[i]]
-        while dq and t_arr[i] - dq[0][0] > 3600:  # on oublie ce qui date de plus d'1 h
+        while dq and t_arr[i] - dq[0][0] > 86400:  # fenêtre étendue à 24 h pour les signaux de spraying
             dq.popleft()
-        cols["distinct_users_from_ip_1h"][i] = len({u for _, u in dq})
-        dq.append((t_arr[i], uid_arr[i]))
+        cols["distinct_users_from_ip_1h"][i] = len({u for t, u in dq if t_arr[i] - t <= 3600})
+        cols["distinct_users_from_ip_24h"][i] = len({u for _, u in dq})
+        if not succ_arr[i]:
+            dq.append((t_arr[i], uid_arr[i]))
 
     # --- Autres features : calculées utilisateur par utilisateur ---
     # On extrait les colonnes en tableaux numpy une seule fois (beaucoup plus rapide).
@@ -98,7 +107,6 @@ def build_features(events, users):
     dev_arr = ev["device_id"].to_numpy()
     lat_arr = ev["latitude"].to_numpy(dtype=float)
     lon_arr = ev["longitude"].to_numpy(dtype=float)
-    succ_arr = ev["success"].to_numpy(dtype=bool)
     trust_arr = ev["trusted"].to_numpy(dtype=bool)
     ts_hour = ev["timestamp"].dt.hour.to_numpy()
     ts_dow = ev["timestamp"].dt.dayofweek.to_numpy()
@@ -112,15 +120,20 @@ def build_features(events, users):
         known_devices, known_ips = set(), set()
         last_succ_t = last_succ_lat = last_succ_lon = None  # dernière connexion réussie et de confiance
         last_event_t = None                                  # dernier événement (réussi ou non)
-        fails = deque()                                      # horodatages des échecs récents
+        fails = deque()                                      # horodatages des échecs sur 24 h
+        failed_sources = deque()                             # sources des échecs sur 24 h
         count = 0                                            # nombre d'événements déjà vus
         for i in idx:  # idx est dans l'ordre chronologique
             t = t_arr[i]
             # Échecs des 10 dernières minutes et de la dernière heure (avant cette tentative).
-            while fails and t - fails[0] > 3600:
+            while fails and t - fails[0] > 86400:
                 fails.popleft()
-            cols["failed_1h"][i] = len(fails)
+            while failed_sources and t - failed_sources[0][0] > 86400:
+                failed_sources.popleft()
+            cols["failed_1h"][i] = sum(1 for x in fails if t - x <= 3600)
             cols["failed_10min"][i] = sum(1 for x in fails if t - x <= 600)
+            cols["failed_24h"][i] = len(fails)
+            cols["distinct_sources_user_24h"][i] = len({source for _, source in failed_sources})
 
             # Caractéristiques de la tentative elle-même.
             cols["hour_of_day"][i] = ts_hour[i]
@@ -128,9 +141,9 @@ def build_features(events, users):
             cols["is_night"][i] = 1 if ts_hour[i] <= 5 else 0  # nuit = de 0 h à 5 h
             cols["success"][i] = 1 if succ_arr[i] else 0
             # « Nouveau » = jamais vu lors d'une connexion réussie et de confiance.
-            cols["is_new_country"][i] = 0 if country_arr[i] in known_countries else 1
+            cols["is_new_country"][i] = 0 if not country_arr[i] or country_arr[i] in known_countries else 1
             cols["is_new_device"][i] = 0 if dev_arr[i] in known_devices else 1
-            cols["is_new_ip"][i] = 0 if ip_arr[i] in known_ips else 1
+            cols["is_new_ip"][i] = 0 if not ip_arr[i] or ip_arr[i] in known_ips else 1
             cols["distance_from_home_km"][i] = haversine_km(home_lat, home_lon, lat_arr[i], lon_arr[i])
             cols["hour_deviation"][i] = _hour_deviation(int(ts_hour[i]), usual)
             cols["user_login_count"][i] = count
@@ -147,6 +160,9 @@ def build_features(events, users):
                 cols["speed_kmh"][i] = min(dist / max(hours, 1 / 60), 3000)  # plafonné pour éviter les valeurs absurdes
             # Cadence : secondes écoulées depuis le dernier événement (très court = attaque automatique).
             cols["seconds_since_last_event"][i] = 86400 if last_event_t is None else min(t - last_event_t, 86400)
+            agent = str(ev.iloc[i].get("user_agent", "")).lower()
+            cols["automated_user_agent"][i] = 1 if any(token in agent for token in ("curl", "python-requests", "headless", "httpclient")) else 0
+            cols["regular_rapid_cadence"][i] = 1 if count >= 3 and cols["seconds_since_last_event"][i] <= 2 else 0
 
             # Mise à jour de la mémoire APRÈS le calcul : on n'utilise que le passé.
             last_event_t = t
@@ -154,12 +170,15 @@ def build_features(events, users):
             if succ_arr[i] and trust_arr[i]:
                 known_countries.add(country_arr[i])
                 known_devices.add(dev_arr[i])
-                known_ips.add(ip_arr[i])
+                if ip_arr[i]:
+                    known_ips.add(ip_arr[i])
                 last_succ_t, last_succ_lat, last_succ_lon = t, lat_arr[i], lon_arr[i]
             if not succ_arr[i]:
                 fails.append(t)
+                failed_sources.append((t, str(ip_arr[i])))
 
+    # Signaux auxiliaires réservés aux règles expertes ; le modèle ML garde FEATURE_COLUMNS inchangées.
     feats = pd.DataFrame(cols)
     feats.index = ev["event_id"].to_numpy()
     feats.index.name = "event_id"
-    return feats[FEATURE_COLUMNS]
+    return feats

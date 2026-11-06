@@ -6,3 +6,7 @@ node_modules/
 *.sqlite3
 backend/ml/artifacts/
 backend/data/generated/
+
+# MaxMind GeoLite2 database (download separately; do not commit)
+backend/data/GeoLite2-City.mmdb
+backend/.env

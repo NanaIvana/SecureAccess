@@ -131,7 +131,7 @@ export default function EventDetail() {
       <div className="grid grid-main">
         <div className="stack">
           <EvaluationPanel evaluation={e.evaluation} />
-          <Panel title="Lieu de la connexion" sub={e.home?.city ? `Domicile déclaré : ${e.home.city}, ${e.home.country}` : null}>
+          <Panel title="Lieu de la connexion" sub={e.location_source === "IP_GEOIP" ? "Localisation estimée à partir de l'adresse IP (base GeoLite2 locale)." : e.location_source === "DEMO_SIMULATED" ? "Lieu simulé pour la démonstration." : e.location_source === "PROFILE_FALLBACK" ? "IP privée/non géolocalisable : ville de référence du compte affichée." : "Aucune donnée de localisation disponible."}>
             <Suspense fallback={<Loader />}><EventMap event={e} home={e.home} /></Suspense>
           </Panel>
           {e.features && (

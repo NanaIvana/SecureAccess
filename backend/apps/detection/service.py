@@ -16,16 +16,20 @@ from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from apps.alerts.models import Alert, Severity
-from apps.events.models import LoginEvent
+from apps.events.models import LoginEvent, Notification
 
 from . import dataio
 from .engine import Detector
 from .features import build_features
-from .models import MLModel, RiskEvaluation, RiskLevel
+from .models import DetectionConfig, DetectionListEntry, DetectionRule, MLModel, RiskEvaluation, RiskLevel
 
-LEVEL_MAP = {"normal": RiskLevel.NORMAL, "suspect": RiskLevel.SUSPECT, "haut_risque": RiskLevel.HAUT_RISQUE}
+LEVEL_MAP = {
+    "normal": RiskLevel.NORMAL, "suspect": RiskLevel.SUSPECT,
+    "haut_risque": RiskLevel.HAUT_RISQUE, "critique": RiskLevel.CRITIQUE,
+}
 
 _cache = {"version": None, "detector": None}  # le modèle est chargé une seule fois par version
 
@@ -42,6 +46,56 @@ def get_detector():
         _cache["detector"] = Detector.load(model.file_path, version=model.version)
         _cache["version"] = model.version
     return _cache["detector"]
+
+
+def build_scoring_policy(feats):
+    """Load persisted rules/settings and annotate feature rows with active list matches."""
+    config, _ = DetectionConfig.objects.get_or_create(pk=1)
+    config_values = {
+        field: getattr(config, field)
+        for field in (
+            "ml_points", "suspect_threshold", "high_risk_threshold", "critical_threshold",
+            "sensitive_offset",
+            "notify_users", "step_up_high_risk", "refuse_critical", "auto_block_critical",
+            "auto_block_minutes",
+        )
+    }
+    rules = {
+        row["key"]: row
+        for row in DetectionRule.objects.values("key", "points", "threshold", "is_enabled")
+    }
+    now = timezone.now()
+    entries = DetectionListEntry.objects.filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=now)
+    ).values("list_type", "kind", "value")
+    blocked = set()
+    trusted = set()
+    for entry in entries:
+        target = blocked if entry["list_type"] == DetectionListEntry.ListType.BLOCAGE else trusted
+        target.add((entry["kind"], entry["value"].casefold()))
+
+    event_rows = LoginEvent.objects.filter(id__in=list(feats.index)).values(
+        "id", "ip_hash", "country", "device__fingerprint", "user__role", "user__profile_type"
+    )
+    for event in event_rows:
+        attributes = (
+            ("IP", event["ip_hash"].casefold()),
+            ("PAYS", event["country"].strip().casefold()),
+            ("APPAREIL", (event["device__fingerprint"] or "").casefold()),
+        )
+        feats.loc[event["id"], "is_blocked"] = any(item in blocked for item in attributes)
+        feats.loc[event["id"], "is_trusted"] = any(item in trusted for item in attributes)
+        feats.loc[event["id"], "is_sensitive"] = event["user__role"] in ("ADMIN", "RESPONSABLE") or event["user__profile_type"] in ("ENSEIGNANT", "SECRETAIRE", "ADMINISTRATION")
+    for column in ("is_blocked", "is_trusted"):
+        if column not in feats:
+            feats[column] = False
+        else:
+            feats[column] = feats[column].fillna(False).astype(bool)
+    if "is_sensitive" not in feats:
+        feats["is_sensitive"] = False
+    else:
+        feats["is_sensitive"] = feats["is_sensitive"].fillna(False).astype(bool)
+    return config_values, rules, feats
 
 
 def evaluate_events(new_events, alert_event_ids=None):
@@ -62,7 +116,8 @@ def evaluate_events(new_events, alert_event_ids=None):
     events = dataio.events_frame(qs)
     users = dataio.users_frame(events["user_id"].unique())
     feats = build_features(events, users)
-    results = {r["event_id"]: r for r in detector.evaluate(feats.loc[ids])}
+    config, rules, scoring_feats = build_scoring_policy(feats.loc[ids].copy())
+    results = {r["event_id"]: r for r in detector.evaluate(scoring_feats, config, rules)}
 
     out = {}
     with transaction.atomic():
@@ -77,5 +132,24 @@ def evaluate_events(new_events, alert_event_ids=None):
             if wants_alert and level != RiskLevel.NORMAL:
                 Alert.objects.create(
                     evaluation=evaluation,
-                    severity=Severity.CRITIQUE if level == RiskLevel.HAUT_RISQUE else Severity.MOYENNE)
+                    severity=Severity.CRITIQUE if level in (RiskLevel.HAUT_RISQUE, RiskLevel.CRITIQUE)
+                    else Severity.MOYENNE)
+                if (ev.source == LoginEvent.Source.LIVE and ev.success and config["auto_block_critical"]
+                        and level == RiskLevel.CRITIQUE):
+                    ev.user.blocked_until = timezone.now() + timedelta(minutes=config["auto_block_minutes"])
+                    ev.user.two_factor_required = True
+                    ev.user.save(update_fields=["blocked_until", "two_factor_required"])
+                    from apps.accounts.views import notify_account_blocked
+                    notify_account_blocked(ev.user, config["auto_block_minutes"], "une connexion à risque critique")
+                if (ev.source == LoginEvent.Source.LIVE and config["notify_users"]
+                        and level != RiskLevel.NORMAL):
+                    Notification.objects.create(
+                        user=ev.user,
+                        event=ev,
+                        kind=Notification.Kind.CONNEXION_INHABITUELLE,
+                        title="Connexion inhabituelle détectée",
+                        message=f"Une connexion depuis {ev.city or 'un lieu inconnu'}, {ev.country or 'pays inconnu'} "
+                                f"a reçu un score de risque de {evaluation.score * 100:.0f}/100.",
+                        needs_response=True,
+                    )
     return out

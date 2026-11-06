@@ -1,6 +1,6 @@
 import axios from "axios";
 
-export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
+export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/+$/, "");
 
 const ACCESS = "sa_access";
 const REFRESH = "sa_refresh";

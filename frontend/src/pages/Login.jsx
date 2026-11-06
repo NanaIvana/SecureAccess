@@ -140,11 +140,18 @@ export default function Login() {
   const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [demoHeaders, setDemoHeaders] = useState({});
+  const [demoFingerprint, setDemoFingerprint] = useState(null);
+  const [scenarioHelp, setScenarioHelp] = useState("");
+  const [scenarioKind, setScenarioKind] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(null);
   const [wait, setWait] = useState(null); // { until, kind: "lock" | "rate", detail }
   const [now, setNow] = useState(Date.now());
+  const [labScenario, setLabScenario] = useState("normal");
+  const [labBusy, setLabBusy] = useState(false);
+  const [labResult, setLabResult] = useState(null);
 
   // Compte à rebours après un verrouillage (423) ou une limitation (429)
   useEffect(() => {
@@ -160,12 +167,68 @@ export default function Login() {
 
   if (user) return <Navigate to="/" replace />;
 
+  function chooseScenario(kind, target = "enseignant@demo.secureaccess.test") {
+    const validPassword = "DemoSchool2026!";
+    const headers = {
+      "X-SecureAccess-Demo-Time": "09:00",
+      "X-SecureAccess-Demo-Country": "Cameroun",
+      "X-SecureAccess-Demo-City": "Yaoundé",
+    };
+    const knownFingerprints = {
+      "enseignant@demo.secureaccess.test": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "secretaire@demo.secureaccess.test": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "administration@demo.secureaccess.test": "cccccccccccccccccccccccccccccccc",
+    };
+    let fingerprint = knownFingerprints[target] || null;
+    let nextPassword = validPassword;
+    let help = "Connexion normale : utilisez les identifiants du compte de démonstration.";
+    if (kind === "brute") {
+      nextPassword = "WrongPassword2026!";
+      help = "Force brute : soumettez ce mauvais mot de passe trois fois, puis utilisez le bouton « Connexion après échecs » pour tester une connexion réussie à risque. Pour tester le verrouillage au 6e essai, utilisez le mode test dans Ma sécurité.";
+    } else if (kind === "after_failures") {
+      help = "Connexion après les échecs : le vrai pipeline réévalue les tentatives récentes. Une alerte ou une vérification supplémentaire peut être déclenchée.";
+    } else if (kind === "device") {
+      fingerprint = null;
+      try { localStorage.removeItem("sa_device_id"); } catch { /* navigateur sans stockage */ }
+      help = "Nouvel appareil : une nouvelle empreinte navigateur sera créée au prochain essai. La connexion réelle sera enregistrée et évaluée.";
+    } else if (kind === "compromised") {
+      fingerprint = null;
+      headers["X-SecureAccess-Demo-Country"] = "France";
+      headers["X-SecureAccess-Demo-City"] = "Paris";
+      headers["X-SecureAccess-Demo-Time"] = "03:00";
+      try { localStorage.removeItem("sa_device_id"); } catch { /* navigateur sans stockage */ }
+      help = "Compte compromis (démo) : tentative depuis Paris à 03:00 avec une nouvelle empreinte. Les en-têtes de lieu/heure ne sont pris en compte que si DEMO_MODE=True côté backend.";
+    }
+    setEmail(target);
+    setPassword(nextPassword);
+    setDemoHeaders(headers);
+    setDemoFingerprint(fingerprint);
+    setScenarioHelp(help);
+    setScenarioKind(kind);
+    setError("");
+    setWait(null);
+  }
+
+  async function runAttackDemo() {
+    setLabBusy(true); setLabResult(null); setError("");
+    try {
+      const { data } = await api.post("/lab/attacks/demo/", {
+        scenario: labScenario,
+        email: email.endsWith("@demo.secureaccess.test") ? email : "enseignant@demo.secureaccess.test",
+        password: "DemoSchool2026!",
+      });
+      setLabResult(data);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally { setLabBusy(false); }
+  }
+
   async function submit(e) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const data = await login(email, password);
+      const data = await login(email, password, demoHeaders, demoFingerprint);
       if (data.two_factor) {
         setStep(data);
         setPassword("");
@@ -211,9 +274,50 @@ export default function Login() {
             </div>
           </div>
         )}
+        {import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE === "true" && (
+          <details className="demo-accounts demo-compact">
+            <summary>Outils de démonstration <span className="muted">(facultatif)</span></summary>
+            <div className="demo-controls">
+              <Field label="Compte de test">
+                <select className="input" defaultValue="" onChange={(e) => e.target.value && chooseScenario("normal", e.target.value)}>
+                  <option value="">Choisir un compte…</option>
+                  <option value="enseignant@demo.secureaccess.test">Enseignant</option>
+                  <option value="secretaire@demo.secureaccess.test">Secrétariat</option>
+                  <option value="administration@demo.secureaccess.test">Administration</option>
+                </select>
+              </Field>
+              <Field label="Scénario à tester">
+                <select className="input" value={labScenario} onChange={(e) => setLabScenario(e.target.value)}>
+                  <option value="normal">Connexion normale</option>
+                  <option value="brute_force">Force brute / verrouillage</option>
+                  <option value="password_spraying">Password spraying</option>
+                  <option value="slow_brute_force">Force brute lente</option>
+                  <option value="new_device">Nouvel appareil</option>
+                  <option value="new_country">Nouveau pays</option>
+                  <option value="unusual_hour">Horaire inhabituel</option>
+                  <option value="bot">Client automatisé / robot</option>
+                  <option value="impossible_travel">Voyage impossible</option>
+                </select>
+              </Field>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <span className="small muted">Mot de passe démo : DemoSchool2026!</span>
+                <button type="button" className="btn sm" onClick={() => chooseScenario("normal", email.endsWith("@demo.secureaccess.test") ? email : "enseignant@demo.secureaccess.test")}>Préparer connexion</button>
+                <button type="button" className="btn primary sm" onClick={runAttackDemo} disabled={labBusy}>
+                  {labBusy ? <Loader2 size={14} className="spin" /> : null} {labScenario === "normal" ? "Tester connexion normale" : "Lancer l'attaque"}
+                </button>
+              </div>
+              {labResult && <div className="small" style={{ marginTop: 8 }}>
+                <strong>Résultat : {labResult.count} tentative(s)</strong>
+                <div className="table-wrap" style={{ marginTop: 6 }}><table className="data"><thead><tr><th>#</th><th>Compte</th><th>HTTP</th><th>Décision</th></tr></thead>
+                  <tbody>{labResult.attempts.map((a) => <tr key={`${a.account}-${a.attempt}`}><td>{a.attempt}</td><td>{a.account}</td><td>{a.http_status}</td><td>{a.decision}</td></tr>)}</tbody></table></div>
+                <p className="muted" style={{ marginTop: 6 }}>Consultez ensuite « Connexions » et « Alertes » dans la console.</p>
+              </div>}
+            </div>
+          </details>
+        )}
         <Field label="Adresse e-mail">
           <input className="input" type="email" autoComplete="username" required value={email}
-                 onChange={(e) => setEmail(e.target.value)} autoFocus />
+                 onChange={(e) => { setEmail(e.target.value); setDemoHeaders({}); setDemoFingerprint(null); }} autoFocus />
         </Field>
         <Field label="Mot de passe">
           <input className="input" type="password" autoComplete="current-password" required value={password}
@@ -227,14 +331,6 @@ export default function Login() {
           <ShieldCheck size={13} style={{ verticalAlign: "-2px", marginRight: 4 }} />
           Après 5 échecs en 10 minutes depuis un même appareil, la connexion est verrouillée 5 min, puis 15 min, puis 60 min.
         </p>
-        {import.meta.env.DEV && (
-          <div className="demo-accounts">
-            Comptes de démonstration (mode développement) : <br />
-            responsable@secureaccess.test, mot de passe Demo2026! <br />
-            serge.tchouamo001@demo.secureaccess.test, mot de passe Demo2026! <br />
-            Administrateur : le compte créé avec <span className="code">createsuperuser</span>.
-          </div>
-        )}
       </form>
     </AuthShell>
   );

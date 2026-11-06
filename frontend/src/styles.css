@@ -77,12 +77,12 @@ p { margin: 0; }
 .side {
   background: var(--side); color: var(--side-ink);
   display: flex; flex-direction: column; padding: 18px 12px;
-  position: sticky; top: 0; height: 100vh;
+  position: sticky; top: 0; height: 100vh; overflow: hidden; min-height: 0;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 22px; color: #fff; }
 .brand strong { font-size: 16px; font-weight: 680; letter-spacing: -0.01em; }
 .brand small { display: block; color: var(--side-ink); font-size: 11.5px; font-weight: 400; }
-.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 2px 12px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .nav-group { margin: 16px 8px 6px; font-size: 12px; color: #7f91a3; }
 .nav a {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px;
@@ -95,7 +95,7 @@ p { margin: 0; }
   margin-left: auto; background: var(--danger); color: #fff; font-size: 11.5px;
   border-radius: 10px; padding: 0 7px; font-weight: 600;
 }
-.side-foot { margin-top: auto; border-top: 1px solid #2a3d52; padding: 14px 8px 0; font-size: 13px; }
+.side-foot { flex: 0 0 auto; margin-top: auto; border-top: 1px solid #2a3d52; padding: 14px 8px 0; font-size: 13px; }
 .side-foot .who { color: #fff; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .side-foot .role { color: var(--side-ink); font-size: 12px; margin-bottom: 10px; }
 .side-foot button { width: 100%; justify-content: center; }
@@ -107,6 +107,8 @@ p { margin: 0; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
 .page-head p { color: var(--ink-2); margin-top: 6px; max-width: 70ch; }
 .page-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.period-select { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; font-weight: 520; }
+.period-select select.input { min-width: 128px; height: 38px; border-radius: 10px; padding: 0 34px 0 12px; font-weight: 560; }
 .back { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; margin-bottom: 10px; color: var(--ink-2); }
 
 /* ---------- Panneaux ---------- */
@@ -438,3 +440,11 @@ dl.facts dd { margin: 0; font-weight: 520; min-width: 0; overflow-wrap: anywhere
 .sec-list .dot { width: 10px; height: 10px; border-radius: 50%; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.high { background: var(--high); } .dot.danger { background: var(--danger); }
 .notices { display: grid; gap: 10px; }
+
+/* Compact, optional demonstration controls on the login screen. */
+.demo-compact { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface-soft, var(--surface)); }
+.demo-compact > summary { cursor: pointer; font-size: 13px; font-weight: 600; list-style-position: inside; }
+.demo-compact[open] > summary { margin-bottom: 12px; }
+.demo-controls { display: grid; gap: 10px; }
+.demo-controls .field { min-width: 0; }
+.demo-controls .row { flex-wrap: wrap; gap: 8px; }

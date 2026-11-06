@@ -1,4 +1,4 @@
-import { CheckCircle2, Download, ShieldAlert } from "lucide-react";
+import { Download } from "lucide-react";
 import { useState } from "react";
 import { download, errorMessage } from "../api/client";
 import { useToast } from "../context/ToastContext";
@@ -34,22 +34,15 @@ export default function Audit() {
     date_from: q.date_from ? `${q.date_from}T00:00:00Z` : "", date_to: q.date_to ? `${q.date_to}T23:59:59Z` : "",
   });
   const [open, setOpen] = useState(null);
-  const verify = useApi("/audit/verify/");
   const toast = useToast();
 
   return (
     <>
       <PageHead title="Journal d'audit"
-                sub="Qui a fait quoi et quand : connexions, traitements d'alertes, changements de règles et de comptes. Aucune entrée ne peut être modifiée ni supprimée, y compris par un administrateur."
+                sub="Qui a fait quoi et quand : connexions, traitements d'alertes et changements de comptes. Aucune entrée ne peut être modifiée ni supprimée via cette API."
                 actions={<button className="btn" onClick={() => download("/audit/export/", { action: q.action, search: q.search }, "audit.csv").catch((e) => toast(errorMessage(e), "error"))}>
                   <Download size={15} /> Exporter en CSV
                 </button>} />
-      {verify.data && (
-        <div className={`notice ${verify.data.ok ? "ok" : "danger"}`} style={{ marginBottom: 16 }}>
-          {verify.data.ok ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
-          <span><strong>{verify.data.ok ? "Intégrité vérifiée." : "Altération détectée."}</strong> {verify.data.detail} Chaque entrée contient l'empreinte SHA-256 de la précédente.</span>
-        </div>
-      )}
       <section className="panel">
         <div className="filters">
           <Field label="Recherche" className="grow">

@@ -77,6 +77,7 @@ HOUR_WEIGHTS = {
     "MIXTE": {7: 3, 8: 6, 9: 5, 10: 4, 11: 3, 18: 4, 19: 6, 20: 6, 21: 4, 22: 2},
 }
 PROFILE_CHOICES = [("JOURNEE", 0.60), ("SOIREE", 0.15), ("MIXTE", 0.25)]
+INSTITUTION_PROFILE_CHOICES = [("ENSEIGNANT", 0.35), ("SECRETAIRE", 0.15), ("ETUDIANT", 0.30), ("PERSONNEL", 0.12), ("ADMINISTRATION", 0.08)]
 
 # Nombre d'épisodes d'attaque (ajustables)
 DEFAULT_ATTACKS = {
@@ -138,11 +139,12 @@ def generate(n_users=300, seed=42, ip_secret="dev-secret", start=None, days=182,
         first, last = rng.choice(FIRST_NAMES), rng.choice(LAST_NAMES)
         city = rng.choices(cities, weights=city_weights, k=1)[0]
         profile = weighted(PROFILE_CHOICES)
+        institution_profile = weighted(INSTITUTION_PROFILE_CHOICES)
         users.append({
             "idx": i, "email": f"{slug(first)}.{slug(last)}{i + 1:03d}@{DATASET_DOMAIN}",
             "full_name": f"{first} {last}", "role": "UTILISATEUR",
             "home_city": city[0], "home_country": "Cameroun", "home_lat": city[1], "home_lon": city[2],
-            "work_profile": profile,
+            "work_profile": profile, "profile_type": institution_profile,
         })
         n_dev = rng.choices([1, 2, 3], weights=[0.35, 0.45, 0.20], k=1)[0]
         dev_ids = [add_device(i, d) for d in rng.sample(USER_DEVICES, n_dev)]

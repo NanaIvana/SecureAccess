@@ -9,6 +9,14 @@ class Role(models.TextChoices):
     RESPONSABLE = "RESPONSABLE", "Responsable d'institution"
 
 
+class ProfileType(models.TextChoices):
+    ENSEIGNANT = "ENSEIGNANT", "Enseignant"
+    SECRETAIRE = "SECRETAIRE", "Secrétaire"
+    ETUDIANT = "ETUDIANT", "Étudiant"
+    PERSONNEL = "PERSONNEL", "Personnel"
+    ADMINISTRATION = "ADMINISTRATION", "Administration scolaire"
+
+
 class WorkProfile(models.TextChoices):
     JOURNEE = "JOURNEE", "Journée (7h-18h)"
     SOIREE = "SOIREE", "Soirée (17h-23h)"
@@ -45,6 +53,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     home_lat = models.FloatField(null=True, blank=True)
     home_lon = models.FloatField(null=True, blank=True)
     work_profile = models.CharField(max_length=10, choices=WorkProfile.choices, default=WorkProfile.JOURNEE)
+    profile_type = models.CharField(max_length=20, choices=ProfileType.choices, default=ProfileType.PERSONNEL)
+    two_factor_enabled = models.BooleanField(default=False)
+    two_factor_required = models.BooleanField(default=False)
+    two_factor_secret = models.CharField(max_length=256, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
     USERNAME_FIELD = "email"
@@ -56,4 +68,3 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
-

@@ -99,7 +99,7 @@ export default function MyAccount() {
   async function saveName(e) {
     e.preventDefault();
     try {
-      const { data } = await api.patch("/auth/me/", { full_name: name });
+      const { data } = await api.patch("/me/", { full_name: name });
       setUser(data);
       toast("Nom enregistré.");
     } catch (err) {
@@ -114,7 +114,7 @@ export default function MyAccount() {
     try {
       await api.post("/auth/change-password/", { old_password: pwd.old_password, new_password: pwd.new_password });
       setPwd({ old_password: "", new_password: "", confirm: "" });
-      toast("Mot de passe modifié. Une notification vous a été envoyée.");
+      toast("Mot de passe modifié.");
     } catch (err) {
       setError(errorMessage(err));
     }

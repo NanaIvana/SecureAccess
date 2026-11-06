@@ -20,6 +20,13 @@ export const ROLES = {
   RESPONSABLE: "Responsable d'institution",
   UTILISATEUR: "Utilisateur",
 };
+export const PROFILE_TYPES = {
+  ENSEIGNANT: "Enseignant",
+  SECRETAIRE: "Secrétaire",
+  ETUDIANT: "Étudiant",
+  PERSONNEL: "Personnel",
+  ADMINISTRATION: "Administration scolaire",
+};
 export const WORK_PROFILES = {
   JOURNEE: "Journée (7h-18h)",
   SOIREE: "Soirée (17h-23h)",
@@ -43,6 +50,9 @@ export const RULES = {
   ECHECS_IP: "Rafale d'échecs IP",
   ELOIGNEMENT: "Éloignement",
   SOURCE_DE_CONFIANCE: "Source de confiance",
+  PASSWORD_SPRAYING: "Password spraying",
+  FORCE_BRUTE_LENTE: "Force brute lente",
+  ROBOT: "Client automatisé / robot",
 };
 export const ATTACKS = {
   aucune: "Aucune (normal)",
